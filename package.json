@@ -1,0 +1,37 @@
+{
+  "name": "mostaql-market-intelligence",
+  "version": "1.0.0",
+  "description": "Local Market Intelligence Platform for Mostaql Freelance Projects",
+  "main": "dist/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "server": "tsx src/presentation/server.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "market-intelligence",
+    "analytics",
+    "freelance-trends",
+    "mostaql",
+    "local-first"
+  ],
+  "author": "Product Engineering Team",
+  "license": "MIT",
+  "dependencies": {
+    "@types/express": "^5.0.6",
+    "better-sqlite3": "^11.8.0",
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.9",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  }
+}
