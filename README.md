@@ -17,7 +17,7 @@
 
 1. **مصدر الحقيقة المحلي (Single Source of Truth):**
    - كافة طلبات الواجهة (Project Explorer، الفلترة، التصفح، التفاصيل) تُعرض فورًا من قاعدة البيانات المحلية (SQLite WAL Mode).
-   - لا توجد طلبات جلب حية (Remote Reads) تمنع أو تعطل تصفح المستخدم.
+   - لا توجد طلبات جلب حية (Remote Reads) تمنع أو تعطل تصفح المستخدم أثناء البحث والفلترة.
 
 2. **هوية المشروع الموحدة (Canonical Project Identity):**
    - هوية المشروع تعتمد حصرًا على `source_project_id` الفريد الصادر من منصة مستقل.
@@ -30,6 +30,11 @@
 4. **التحديث التدريجي السلس (Progressive Local-First Refresh):**
    - عند دخول المستخدم لصفحة مشروع `/projects/{source_project_id}`، تُعرض البيانات المخزنة محليًا **فورًا**.
    - يتم إطلاق فحص خلفي للمصدر في الخفاء، وفي حال وجود بيانات حديثة، يظهر شريط تنبيه غير مزعج للمستخدم لتحديث الصفحة دون تغيير مفاجئ في الواجهة (No Layout Shift).
+
+5. **محرك التصنيف والبحث النصي (Taxonomy & FTS Engine):**
+   - نمط تصنيف متعدد الأبعاد (7 أبعاد: `domain`, `service_type`, `project_type`, `industry`, `work_type`, `technology`, `skill`).
+   - توحيد المهارات والتقنيات (Skill Normalization) لدمج الصيغ المختلفة (مثل: `لارافيل` و `Laravel Framework` $\rightarrow$ `Laravel`).
+   - محرك بحث نصي كامل **SQLite FTS5** مع دعم الفلترة المركبة وتوقيت الرياض (Asia/Riyadh - GMT+3).
 
 ---
 
@@ -54,7 +59,7 @@ npm run build
 npm run server
 ```
 - سيعمل التطبيق على الرابط المحلي: **`http://localhost:3000`**
-- يتيح لك الرابط تصفح كافة المشاريع، الفلترة المتقدمة، العرض التفصيلي للمشاريع، وإجراء التحديثات اليدوية والآلية.
+- يتيح لك الرابط تصفح كافة المشاريع، الفلترة المتقدمة، العرض التفصيلي للمشاريع، وإجراء التحديثات اليدوية والآلية بتوقيت الرياض GMT+3.
 
 ---
 
@@ -64,21 +69,23 @@ npm run server
 | :--- | :--- |
 | `npm run server` | تشغيل خادم Express مع الواجهة التفاعلية على المنفذ `3000`. |
 | `npm run dev` | تشغيل جامع البيانات اليومي الذكي (Incremental Daily Collector) في بيئة التطوير. |
-| `npm test` | تشغيل حزمة الاختبارات الشاملة (39 اختبارًا متكاملاً عبر Vitest). |
+| `npm test` | تشغيل حزمة الاختبارات الشاملة (49 اختبارًا متكاملاً عبر Vitest). |
 | `npm run build` | ترجمة كود TypeScript إلى JavaScript داخل مجلد `dist/`. |
 
 ---
 
 ## 🔌 واجهات برمجة التطبيقات والخدمات (API Endpoints)
 
-### 📊 تصفح واستعلام المشاريع
-- `GET /api/projects`: استعلام عن المشاريع المحفوظة مع دعم كامل للفلترة (بالتصنيف، الميزانية، مدة التنفيذ، عدد العروض، المهارات، تاريخ النشر)، والبحث النصي، والترتيب، والصفحات.
+### 📊 تصفح واستعلام المشاريع والفلترة المتقدمة
+- `GET /api/projects`: استعلام عن المشاريع المحفوظة مع دعم كامل للفلترة المتقدمة (FTS Text Search، التصنيف متعدد المحاور، الميزانية، مدة التنفيذ، عدد العروض، سلوك التقنيات Match Any/All، وتاريخ النشر بتوقيت الرياض).
 - `GET /api/projects/:id`: جلب البيانات الكاملة للمشروع محليًا مع إطلاق فحص الخلفية للتحديث.
+- `GET /api/taxonomy`: استرجاع جميع أبعاد ومصطلحات وقواعد توحيد التصنيف المتاحة في النظام.
 
-### 🔄 عمليات الجمع والمزامنة
+### 🔄 عمليات الجمع والمزامنة والتصنيف
 - `POST /api/projects/:id/refresh`: طلب تحديث يدوي للمشروع المحدد مباشرة من المصدر.
 - `POST /api/collector/daily`: إطلاق تشغيل جامع البيانات اليومي (Incremental Daily Collector).
 - `POST /api/collector/backfill`: إطلاق طابور استكمال بيانات المشاريع غير المكتملة (Backfill Incomplete Projects).
+- `POST /api/taxonomy/reclassify`: إطلاق عملية إعادة تصنيف وفهرسة كافة المشاريع محلياً.
 
 ---
 
@@ -88,18 +95,19 @@ npm run server
 mostaql.monitor/
 ├── src/
 │   ├── core/                    # Clean Architecture Domain Entities & Interfaces
-│   │   ├── entities/            # Project, ProjectObservation, RawPayload, CollectionRun
+│   │   ├── entities/            # Project, ProjectObservation, RawPayload, Taxonomy, etc.
 │   │   └── interfaces/          # Repositories & Collector Contracts
 │   ├── application/             # Use Cases & Orchestration Logic
+│   │   ├── services/            # SkillNormalizerService, RuleBasedClassifierService
 │   │   ├── use-cases/           # DailyCollection, GetAndRefresh, BackfillIncomplete, etc.
 │   │   └── schedulers/          # Daily & Cron Schedulers
 │   ├── infrastructure/          # External Integrations & Storage
 │   │   ├── collectors/          # Mostaql HTML Parser & Adapters
-│   │   ├── database/            # SQLite Connection & Schema Migrations
-│   │   └── repositories/        # SqliteProjectRepository Implementation
+│   │   ├── database/            # SQLite Connection, Schema Migrations & FTS5
+│   │   └── repositories/        # SqliteProjectRepository & SqliteTaxonomyRepository
 │   ├── presentation/            # Express Server, REST APIs & Web UI
-│   └── shared/                  # Utilities, Hashing, Configs & Errors
-├── tests/                       # Automated Test Suites (Phases 1 - 4B)
+│   └── shared/                  # Utilities, Hashing, DateUtils (Riyadh GMT+3), Configs
+├── tests/                       # Automated Test Suites (Phases 1 - 4C)
 ├── data/                        # Local SQLite Database Storage
 ├── dist/                        # Compiled Production JavaScript Output
 ├── package.json
@@ -110,15 +118,16 @@ mostaql.monitor/
 
 ## 🧪 الاختبارات والجودة (Testing & Quality Assurance)
 
-تم تطوير النظام وفق منهجية TDD والتأكد من تغطية كافة حالات الاستخدام عبر **39 اختبارًا برمجياً**:
+تم تطوير النظام وفق منهجية TDD والتأكد من تغطية كافة حالات الاستخدام عبر **49 اختبارًا برمجياً متكاملاً**:
 ```bash
 npm test
 ```
 
 ---
 
-## 📜 الترخيص والملكية (License & Credits)
+## 📜 الترخيص والملكية ورسائل الإيداع (License & Git Guidelines)
 
 - **الفكرة والهندسة والتنفيذ:** عاطف عقل (Atef Akl)
 - **مساعد الذكاء الاصطناعي:** أنتيجرافيتي (Antigravity AI Assistant)
+- **لغة التوثيق ورسائل الإيداع (Git Commits):** يتم كتابة جميع رسائل الإيداع والتسليم (Git Commits) باللغة العربية المباشرة والدقيقة.
 - جميع الحقوق محفوظة © 2026.
