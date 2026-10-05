@@ -194,10 +194,10 @@ export class MostaqlParser {
     // Standard format YYYY-MM-DD HH:mm:ss or ISO
     let normalized = rawDateStr.trim().replace(' ', 'T');
     
-    // Mostaql server dates are in Riyadh GMT+3 time.
-    // Append +03:00 if no offset is present
+    // Mostaql server datetime attributes are in UTC ISO format.
+    // Append Z if no timezone offset is present
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(normalized)) {
-      normalized += '+03:00';
+      normalized += 'Z';
     }
 
     const dateObj = new Date(normalized);
