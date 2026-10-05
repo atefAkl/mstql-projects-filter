@@ -231,4 +231,32 @@ describe('Phase 4C - Expanded Taxonomy, Search & Advanced Filtering Suite', () =
     expect(res.items.length).toBe(1);
     expect(res.items[0].sourceProjectId).toBe('1001');
   });
+
+  it('11. Evidence-Based Domain Classification: Audio/non-tech project should remain unclassified (no software fallback)', async () => {
+    const audioItem: ParsedProjectItem = {
+      sourceProjectId: '1004',
+      title: 'تسجيل وتعديل صوتي لحلقات بودكاست',
+      sourceUrl: 'https://mostaql.com/project/1004-podcast-audio',
+      descriptionRaw: 'مطلوب مؤدي صوت عربي محترف لتلخيص وتسجيل بودكاست صوتي',
+      publishedAtParsed: new Date(),
+      bidsCountParsed: 3,
+      budgetMinUsd: 50,
+      budgetMaxUsd: 100,
+      budgetAvgUsd: 75,
+      statusRaw: 'مفتوح',
+      skillsTagsRaw: ['هندسة صوتية', 'تعليق صوتي'],
+      clientNameRaw: 'استوديو الصوت',
+      rawHtml: '<html>...</html>'
+    };
+
+    await processItemUseCase.execute(audioItem);
+
+    const project4 = await projectRepo.findBySourceProjectId('1004');
+    expect(project4).toBeDefined();
+
+    const terms = await taxonomyRepo.getProjectTerms(project4!.id);
+    const domainTerms = terms.filter(t => t.dimensionCode === 'domain');
+    expect(domainTerms.length).toBe(0); // MUST be unclassified, no default 'software' fallback!
+  });
 });
+

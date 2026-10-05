@@ -21,7 +21,11 @@ async function runVerification() {
   console.log('Terms per dimension:', JSON.stringify(termDist, null, 2));
   console.log('Total terms:', terms.length);
 
-  console.log('\n=== RUNNING CLASSIFIER PASS OVER EXISTING DB PROJECTS ===');
+  console.log('\n=== RE-RUNNING CLASSIFIER PASS OVER EXISTING DB PROJECTS ===');
+  // Clear old classifications first
+  db.prepare(`DELETE FROM project_classifications`).run();
+  db.prepare(`DELETE FROM project_skills`).run();
+
   const allProjects = await projectRepo.findProjects({ limit: 5000 });
   console.log(`Total projects in DB: ${allProjects.length}`);
 
@@ -42,7 +46,8 @@ async function runVerification() {
       COUNT(DISTINCT CASE WHEN tt.dimension_code = 'service_type' THEN p.id END) as has_service_type,
       COUNT(DISTINCT CASE WHEN tt.dimension_code = 'industry' THEN p.id END) as has_industry,
       COUNT(DISTINCT CASE WHEN tt.dimension_code = 'work_type' THEN p.id END) as has_work_type,
-      COUNT(DISTINCT CASE WHEN tt.dimension_code = 'technology' THEN p.id END) as has_technology
+      COUNT(DISTINCT CASE WHEN tt.dimension_code = 'technology' THEN p.id END) as has_technology,
+      COUNT(DISTINCT CASE WHEN tt.dimension_code = 'skill' THEN p.id END) as has_skill
     FROM projects p
     LEFT JOIN project_classifications pc ON pc.project_id = p.id
     LEFT JOIN taxonomy_terms tt ON tt.id = pc.taxonomy_term_id
@@ -53,26 +58,30 @@ async function runVerification() {
     WHERE NOT EXISTS (SELECT 1 FROM project_classifications pc WHERE pc.project_id = p.id)
   `).get() as any;
 
-  console.log('Coverage statistics:', {
+  console.log('Coverage statistics JSON:', JSON.stringify({
     ...coverageStmt,
     unclassified: unclassifiedStmt.unclassified
-  });
+  }, null, 2));
 
-  console.log('\n=== 3. 10 REAL CLASSIFIED PROJECTS SAMPLE ===');
-  const sampleProjects = allProjects.slice(0, 10);
+  console.log('\n=== 3. 15 REAL CLASSIFIED PROJECTS SAMPLE ===');
+  // Pick diverse 15 sample projects (including tech and non-tech)
+  const sampleProjects = allProjects.slice(0, 15);
   for (const p of sampleProjects) {
     const projectTerms = await taxonomyRepo.getProjectTerms(p.id);
     const getDim = (dimCode: string) => projectTerms.filter(t => t.dimensionCode === dimCode).map(t => `${t.nameAr} (${t.code})`).join(', ') || 'N/A';
+    const clsList = await taxonomyRepo.getProjectClassifications(p.id);
+    const evidenceStr = clsList.map(c => `${c.taxonomyTermId}:${c.classifiedBy}:${c.confidenceScore}`).join(', ') || 'None';
 
     console.log({
       id: p.sourceProjectId,
-      title: p.title.slice(0, 50),
+      title: p.title.trim().slice(0, 60),
       domain: getDim('domain'),
       serviceType: getDim('service_type'),
       projectType: getDim('project_type'),
       industry: getDim('industry'),
       workType: getDim('work_type'),
-      technologies: getDim('technology')
+      technologies: getDim('technology'),
+      evidence: evidenceStr
     });
   }
 
@@ -124,7 +133,7 @@ async function runVerification() {
   });
 
   console.log('Combined filter results count:', combinedRes.total);
-  console.log('Sample result items:', combinedRes.items.slice(0, 3).map(i => ({ id: i.sourceProjectId, title: i.title })));
+  console.log('Sample result items:', combinedRes.items.slice(0, 5).map(i => ({ id: i.sourceProjectId, title: i.title.slice(0, 50) })));
 
   console.log('\n=== 8. MULTIPLE OBSERVATIONS DEDUPLICATION CHECK ===');
   const dupCheckSql = `

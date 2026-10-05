@@ -70,16 +70,6 @@ export class RuleBasedClassifierService {
     matchRule(['تسويق', 'إعلانات', 'حملة', 'سيو', 'seo', 'facebook', 'marketing'], 'marketing');
     matchRule(['كتابة', 'ترجمة', 'مقال', 'تدقيق', 'writing', 'translation'], 'writing');
 
-    // Default Domain to Software if no domain matched
-    const hasDomain = Array.from(termMatches.keys()).some(termId => {
-      const t = allTerms.find(term => term.id === termId);
-      return t?.dimensionCode === 'domain';
-    });
-    if (!hasDomain && termMapByCode.has('software')) {
-      const domId = termMapByCode.get('software')!;
-      termMatches.set(domId, { termId: domId, confidence: 0.5, source: 'default_rule' });
-    }
-
     // 3. Service Type Classification
     matchRule(['تطوير', 'برمجة', 'بناء', 'إنشاء', 'development', 'build'], 'development');
     matchRule(['تصميم', 'واجهة', 'واجهات', 'ui/ux', 'design'], 'design');
