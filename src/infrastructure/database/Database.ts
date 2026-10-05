@@ -15,7 +15,6 @@ export class AppDatabase {
     }
 
     this.db = new Database(finalPath);
-    // Enable WAL mode for high performance concurrency
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
 
@@ -65,6 +64,11 @@ export class AppDatabase {
         last_seen_at TEXT NOT NULL,
         status TEXT NOT NULL,
         client_id TEXT,
+        raw_content_hash TEXT,
+        normalized_content_hash TEXT,
+        last_source_sync_at TEXT,
+        last_sync_status TEXT,
+        completeness_status TEXT DEFAULT 'complete',
         FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
       );
 
@@ -130,6 +134,26 @@ export class AppDatabase {
     `;
 
     this.db.exec(migrationSql);
+
+    // Safely alter existing table if columns don't exist
+    const pragma = this.db.prepare("PRAGMA table_info('projects')").all() as { name: string }[];
+    const columnNames = pragma.map(c => c.name);
+
+    if (!columnNames.includes('raw_content_hash')) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN raw_content_hash TEXT");
+    }
+    if (!columnNames.includes('normalized_content_hash')) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN normalized_content_hash TEXT");
+    }
+    if (!columnNames.includes('last_source_sync_at')) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN last_source_sync_at TEXT");
+    }
+    if (!columnNames.includes('last_sync_status')) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN last_sync_status TEXT");
+    }
+    if (!columnNames.includes('completeness_status')) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN completeness_status TEXT DEFAULT 'complete'");
+    }
   }
 
   public close(): void {

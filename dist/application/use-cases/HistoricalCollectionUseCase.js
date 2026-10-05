@@ -29,7 +29,7 @@ class HistoricalCollectionUseCase {
             startPage = run.lastProcessedPage || 1;
         }
         else {
-            const runId = `run_hist_${startTime.getTime()}`;
+            const runId = `run_hist_${startTime.getTime()}_${Math.floor(Math.random() * 1000)}`;
             run = new CollectionRun_1.CollectionRun({
                 id: runId,
                 type: 'historical',

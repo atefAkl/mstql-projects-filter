@@ -70,7 +70,7 @@ class ProcessCollectionItemUseCase {
                 existingProject.updateStatus(item.statusRaw);
             }
             await this.projectRepository.saveProject(existingProject);
-            const observationId = `obs_${item.sourceProjectId}_${now.getTime()}`;
+            const observationId = `obs_${item.sourceProjectId}_${now.getTime()}_${Math.floor(Math.random() * 1000)}`;
             const observation = new ProjectObservation_1.ProjectObservation({
                 id: observationId,
                 projectId: existingProject.id,

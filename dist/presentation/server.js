@@ -1,103 +1,99 @@
-import express, { Request, Response } from 'express';
-import path from 'path';
-import { AppDatabase } from '../infrastructure/database/Database';
-import { SqliteProjectRepository } from '../infrastructure/repositories/SqliteProjectRepository';
-import { SqliteCollectionRunRepository } from '../infrastructure/repositories/SqliteCollectionRunRepository';
-import { MostaqlHtmlCollectorAdapter } from '../infrastructure/collectors/MostaqlHtmlCollectorAdapter';
-import { ProcessCollectionItemUseCase } from '../application/use-cases/ProcessCollectionItemUseCase';
-import { DailyCollectionUseCase } from '../application/use-cases/DailyCollectionUseCase';
-import { DailyScheduler } from '../application/schedulers/DailyScheduler';
-import { GetAndRefreshProjectUseCase } from '../application/use-cases/GetAndRefreshProjectUseCase';
-import { BackfillIncompleteProjectsUseCase } from '../application/use-cases/BackfillIncompleteProjectsUseCase';
-import { defaultConfig } from '../shared/config';
-
-export function createServer(dbPath?: string) {
-  const app = express();
-  app.use(express.json());
-
-  const appDb = new AppDatabase(dbPath);
-  const db = appDb.getRawConnection();
-  const projectRepo = new SqliteProjectRepository(db);
-  const runRepo = new SqliteCollectionRunRepository(db);
-  const collector = new MostaqlHtmlCollectorAdapter({ minDelayMs: 1000, maxDelayMs: 1500 });
-  const processItemUseCase = new ProcessCollectionItemUseCase(projectRepo);
-  const dailyCollectionUseCase = new DailyCollectionUseCase(collector, projectRepo, runRepo, processItemUseCase);
-  const getAndRefreshUseCase = new GetAndRefreshProjectUseCase(projectRepo, collector);
-  const scheduler = new DailyScheduler(dailyCollectionUseCase);
-
-  // Start background scheduler
-  scheduler.start();
-
-  // Create isolated API Router
-  const apiRouter = express.Router();
-
-  // 1. Overview KPIs Endpoint
-  apiRouter.get('/stats/overview', async (_req: Request, res: Response) => {
-    try {
-      const totalProjects = await projectRepo.countProjects();
-      const latestRun = await runRepo.getLatestCompletedRun();
-      const latestTimestamp = await projectRepo.getLatestSuccessfulCollectionTimestamp();
-
-      const avgStmt = db.prepare(`
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createServer = createServer;
+const express_1 = __importDefault(require("express"));
+const Database_1 = require("../infrastructure/database/Database");
+const SqliteProjectRepository_1 = require("../infrastructure/repositories/SqliteProjectRepository");
+const SqliteCollectionRunRepository_1 = require("../infrastructure/repositories/SqliteCollectionRunRepository");
+const MostaqlHtmlCollectorAdapter_1 = require("../infrastructure/collectors/MostaqlHtmlCollectorAdapter");
+const ProcessCollectionItemUseCase_1 = require("../application/use-cases/ProcessCollectionItemUseCase");
+const DailyCollectionUseCase_1 = require("../application/use-cases/DailyCollectionUseCase");
+const DailyScheduler_1 = require("../application/schedulers/DailyScheduler");
+const GetAndRefreshProjectUseCase_1 = require("../application/use-cases/GetAndRefreshProjectUseCase");
+const BackfillIncompleteProjectsUseCase_1 = require("../application/use-cases/BackfillIncompleteProjectsUseCase");
+function createServer(dbPath) {
+    const app = (0, express_1.default)();
+    app.use(express_1.default.json());
+    const appDb = new Database_1.AppDatabase(dbPath);
+    const db = appDb.getRawConnection();
+    const projectRepo = new SqliteProjectRepository_1.SqliteProjectRepository(db);
+    const runRepo = new SqliteCollectionRunRepository_1.SqliteCollectionRunRepository(db);
+    const collector = new MostaqlHtmlCollectorAdapter_1.MostaqlHtmlCollectorAdapter({ minDelayMs: 1000, maxDelayMs: 1500 });
+    const processItemUseCase = new ProcessCollectionItemUseCase_1.ProcessCollectionItemUseCase(projectRepo);
+    const dailyCollectionUseCase = new DailyCollectionUseCase_1.DailyCollectionUseCase(collector, projectRepo, runRepo, processItemUseCase);
+    const getAndRefreshUseCase = new GetAndRefreshProjectUseCase_1.GetAndRefreshProjectUseCase(projectRepo, collector);
+    const scheduler = new DailyScheduler_1.DailyScheduler(dailyCollectionUseCase);
+    // Start background scheduler
+    scheduler.start();
+    // Create isolated API Router
+    const apiRouter = express_1.default.Router();
+    // 1. Overview KPIs Endpoint
+    apiRouter.get('/stats/overview', async (_req, res) => {
+        try {
+            const totalProjects = await projectRepo.countProjects();
+            const latestRun = await runRepo.getLatestCompletedRun();
+            const latestTimestamp = await projectRepo.getLatestSuccessfulCollectionTimestamp();
+            const avgStmt = db.prepare(`
         SELECT AVG(bids_count) as avg_bids, AVG(budget_avg_usd) as avg_budget
         FROM project_observations
-      `).get() as { avg_bids: number | null; avg_budget: number | null };
-
-      res.json({
-        totalProjects,
-        totalObservations: totalProjects,
-        averageBids: avgStmt.avg_bids ? Math.round(avgStmt.avg_bids) : 0,
-        averageBudgetUsd: avgStmt.avg_budget ? Math.round(avgStmt.avg_budget) : 0,
-        lastCollectionAt: latestTimestamp ? latestTimestamp.toISOString() : null,
-        isRunning: DailyCollectionUseCase.isRunning(),
-        latestRun,
-      });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // 2. Trigger Smart Refresh Action Endpoint (POST /api/projects/:id/refresh)
-  apiRouter.post('/projects/:id/refresh', async (req: Request, res: Response) => {
-    try {
-      const projectId = req.params.id as string;
-      const result = await getAndRefreshUseCase.execute({
-        sourceProjectId: projectId,
-        forceRefresh: true,
-      });
-      res.json(result);
-    } catch (err) {
-      console.error('[API Error /projects/:id/refresh]:', err);
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // 3. Specific Project Detail & Smart Refresh Endpoint (GET /api/projects/:id)
-  apiRouter.get('/projects/:id', async (req: Request, res: Response) => {
-    try {
-      const projectId = req.params.id as string;
-      const forceRefresh = req.query.refresh === 'true';
-      const result = await getAndRefreshUseCase.execute({
-        sourceProjectId: projectId,
-        forceRefresh,
-      });
-      res.json(result);
-    } catch (err) {
-      console.error('[API Error /projects/:id]:', err);
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // 4. Project Explorer Search & Filter API (GET /api/projects)
-  apiRouter.get('/projects', async (req: Request, res: Response) => {
-    try {
-      const page = parseInt(req.query.page as string || '1', 10);
-      const limit = parseInt(req.query.limit as string || '15', 10);
-      const offset = (page - 1) * limit;
-      const q = req.query.q as string || '';
-      const status = req.query.status as string || '';
-
-      let sql = `
+      `).get();
+            res.json({
+                totalProjects,
+                totalObservations: totalProjects,
+                averageBids: avgStmt.avg_bids ? Math.round(avgStmt.avg_bids) : 0,
+                averageBudgetUsd: avgStmt.avg_budget ? Math.round(avgStmt.avg_budget) : 0,
+                lastCollectionAt: latestTimestamp ? latestTimestamp.toISOString() : null,
+                isRunning: DailyCollectionUseCase_1.DailyCollectionUseCase.isRunning(),
+                latestRun,
+            });
+        }
+        catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+    // 2. Trigger Smart Refresh Action Endpoint (POST /api/projects/:id/refresh)
+    apiRouter.post('/projects/:id/refresh', async (req, res) => {
+        try {
+            const projectId = req.params.id;
+            const result = await getAndRefreshUseCase.execute({
+                sourceProjectId: projectId,
+                forceRefresh: true,
+            });
+            res.json(result);
+        }
+        catch (err) {
+            console.error('[API Error /projects/:id/refresh]:', err);
+            res.status(500).json({ error: err.message });
+        }
+    });
+    // 3. Specific Project Detail & Smart Refresh Endpoint (GET /api/projects/:id)
+    apiRouter.get('/projects/:id', async (req, res) => {
+        try {
+            const projectId = req.params.id;
+            const forceRefresh = req.query.refresh === 'true';
+            const result = await getAndRefreshUseCase.execute({
+                sourceProjectId: projectId,
+                forceRefresh,
+            });
+            res.json(result);
+        }
+        catch (err) {
+            console.error('[API Error /projects/:id]:', err);
+            res.status(500).json({ error: err.message });
+        }
+    });
+    // 4. Project Explorer Search & Filter API (GET /api/projects)
+    apiRouter.get('/projects', async (req, res) => {
+        try {
+            const page = parseInt(req.query.page || '1', 10);
+            const limit = parseInt(req.query.limit || '15', 10);
+            const offset = (page - 1) * limit;
+            const q = req.query.q || '';
+            const status = req.query.status || '';
+            let sql = `
         SELECT p.id, p.source_project_id, p.title, p.source_url, p.published_at, p.first_seen_at, p.last_seen_at, p.status,
                o.bids_count, o.budget_min_usd, o.budget_max_usd, o.budget_avg_usd
         FROM projects p
@@ -109,112 +105,101 @@ export function createServer(dbPath?: string) {
         )
         WHERE 1=1
       `;
-      const params: any[] = [];
-
-      if (q) {
-        sql += ` AND (p.title LIKE ? OR p.description_raw LIKE ? OR p.source_project_id LIKE ?)`;
-        params.push(`%${q}%`, `%${q}%`, `%${q}%`);
-      }
-
-      if (status) {
-        sql += ` AND p.status = ?`;
-        params.push(status);
-      }
-
-      sql += ` ORDER BY p.published_at DESC LIMIT ? OFFSET ?`;
-      params.push(limit, offset);
-
-      const rows = db.prepare(sql).all(...params);
-
-      let countSql = `SELECT COUNT(*) as total FROM projects p WHERE 1=1`;
-      const countParams: any[] = [];
-      if (q) {
-        countSql += ` AND (p.title LIKE ? OR p.description_raw LIKE ? OR p.source_project_id LIKE ?)`;
-        countParams.push(`%${q}%`, `%${q}%`, `%${q}%`);
-      }
-      if (status) {
-        countSql += ` AND p.status = ?`;
-        countParams.push(status);
-      }
-      const totalRow = db.prepare(countSql).get(...countParams) as { total: number };
-
-      res.json({
-        page,
-        limit,
-        total: totalRow.total,
-        totalPages: Math.ceil(totalRow.total / limit) || 1,
-        items: rows,
-      });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // 5. Trigger Live Incremental Collection API
-  apiRouter.post('/collection/trigger', async (_req: Request, res: Response) => {
-    try {
-      const result = await dailyCollectionUseCase.execute(true);
-      res.json({
-        success: true,
-        message: `تم جلب ${result.newProjectsCount} مشروع جديد وتحديث ${result.duplicateProjectsCount} ملاحظة!`,
-        newProjectsCount: result.newProjectsCount,
-        duplicateProjectsCount: result.duplicateProjectsCount,
-        pagesProcessed: result.run.pagesProcessed,
-        run: result.run,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, error: (err as Error).message });
-    }
-  });
-
-  // 6. Collection Runs History API
-  apiRouter.get('/runs', async (_req: Request, res: Response) => {
-    try {
-      const runs = await runRepo.listRuns(20, 0);
-      res.json(runs);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // 7. Trigger Incomplete Projects Backfill Ingestion API
-  apiRouter.post('/collection/backfill', async (_req: Request, res: Response) => {
-    try {
-      const backfillUseCase = new BackfillIncompleteProjectsUseCase(projectRepo, collector);
-      const result = await backfillUseCase.execute();
-      res.json({
-        success: true,
-        message: `تم معالجة ${result.processedCount} مشروع: نجاح ${result.successCount}، فشل ${result.failedCount}`,
-        result,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, error: (err as Error).message });
-    }
-  });
-
-  // MUST MOUNT API ROUTER FIRST
-  app.use('/api', apiRouter);
-
-  // Route for Standalone Project Detail Page: /projects/:id
-  app.get('/projects/:id', (req: Request, res: Response) => {
-    res.send(getProjectDetailPageHtml(req.params.id as string));
-  });
-
-  // Root Web Dashboard Route
-  app.get('/', (_req: Request, res: Response) => {
-    res.send(getWebDashboardHtml());
-  });
-
-  // Fallback 404 handler
-  app.use((_req: Request, res: Response) => {
-    res.status(404).send(getWebDashboardHtml());
-  });
-
-  return app;
+            const params = [];
+            if (q) {
+                sql += ` AND (p.title LIKE ? OR p.description_raw LIKE ? OR p.source_project_id LIKE ?)`;
+                params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+            }
+            if (status) {
+                sql += ` AND p.status = ?`;
+                params.push(status);
+            }
+            sql += ` ORDER BY p.published_at DESC LIMIT ? OFFSET ?`;
+            params.push(limit, offset);
+            const rows = db.prepare(sql).all(...params);
+            let countSql = `SELECT COUNT(*) as total FROM projects p WHERE 1=1`;
+            const countParams = [];
+            if (q) {
+                countSql += ` AND (p.title LIKE ? OR p.description_raw LIKE ? OR p.source_project_id LIKE ?)`;
+                countParams.push(`%${q}%`, `%${q}%`, `%${q}%`);
+            }
+            if (status) {
+                countSql += ` AND p.status = ?`;
+                countParams.push(status);
+            }
+            const totalRow = db.prepare(countSql).get(...countParams);
+            res.json({
+                page,
+                limit,
+                total: totalRow.total,
+                totalPages: Math.ceil(totalRow.total / limit) || 1,
+                items: rows,
+            });
+        }
+        catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+    // 5. Trigger Live Incremental Collection API
+    apiRouter.post('/collection/trigger', async (_req, res) => {
+        try {
+            const result = await dailyCollectionUseCase.execute(true);
+            res.json({
+                success: true,
+                message: `تم جلب ${result.newProjectsCount} مشروع جديد وتحديث ${result.duplicateProjectsCount} ملاحظة!`,
+                newProjectsCount: result.newProjectsCount,
+                duplicateProjectsCount: result.duplicateProjectsCount,
+                pagesProcessed: result.run.pagesProcessed,
+                run: result.run,
+            });
+        }
+        catch (err) {
+            res.status(500).json({ success: false, error: err.message });
+        }
+    });
+    // 6. Collection Runs History API
+    apiRouter.get('/runs', async (_req, res) => {
+        try {
+            const runs = await runRepo.listRuns(20, 0);
+            res.json(runs);
+        }
+        catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+    // 7. Trigger Incomplete Projects Backfill Ingestion API
+    apiRouter.post('/collection/backfill', async (_req, res) => {
+        try {
+            const backfillUseCase = new BackfillIncompleteProjectsUseCase_1.BackfillIncompleteProjectsUseCase(projectRepo, collector);
+            const result = await backfillUseCase.execute();
+            res.json({
+                success: true,
+                message: `تم معالجة ${result.processedCount} مشروع: نجاح ${result.successCount}، فشل ${result.failedCount}`,
+                result,
+            });
+        }
+        catch (err) {
+            res.status(500).json({ success: false, error: err.message });
+        }
+    });
+    // MUST MOUNT API ROUTER FIRST
+    app.use('/api', apiRouter);
+    // Route for Standalone Project Detail Page: /projects/:id
+    app.get('/projects/:id', (req, res) => {
+        res.send(getProjectDetailPageHtml(req.params.id));
+    });
+    // Root Web Dashboard Route
+    app.get('/', (_req, res) => {
+        res.send(getWebDashboardHtml());
+    });
+    // Fallback 404 handler
+    app.use((_req, res) => {
+        res.status(404).send(getWebDashboardHtml());
+    });
+    return app;
 }
-
-function getProjectDetailPageHtml(projectId: string): string {
-  return `<!DOCTYPE html>
+function getProjectDetailPageHtml(projectId) {
+    return `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8">
@@ -589,9 +574,8 @@ function getProjectDetailPageHtml(projectId: string): string {
 </body>
 </html>`;
 }
-
-function getWebDashboardHtml(): string {
-  return `<!DOCTYPE html>
+function getWebDashboardHtml() {
+    return `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8">
@@ -841,14 +825,14 @@ function getWebDashboardHtml(): string {
 </body>
 </html>`;
 }
-
 if (require.main === module || process.argv[1]?.includes('server')) {
-  const PORT = process.env.PORT || 3000;
-  const app = createServer();
-  app.listen(PORT, () => {
-    console.log(`==================================================`);
-    console.log(`Mostaql Market Intelligence Web Server Running!`);
-    console.log(`Open in Browser: http://localhost:${PORT}`);
-    console.log(`==================================================`);
-  });
+    const PORT = process.env.PORT || 3000;
+    const app = createServer();
+    app.listen(PORT, () => {
+        console.log(`==================================================`);
+        console.log(`Mostaql Market Intelligence Web Server Running!`);
+        console.log(`Open in Browser: http://localhost:${PORT}`);
+        console.log(`==================================================`);
+    });
 }
+//# sourceMappingURL=server.js.map

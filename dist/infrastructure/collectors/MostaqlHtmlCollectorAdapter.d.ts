@@ -14,6 +14,7 @@ export declare class MostaqlHtmlCollectorAdapter implements ICollectorAdapter {
     private readonly maxDelayMs;
     constructor(config?: MostaqlCollectorConfig);
     fetchPage(pageNumber: number): Promise<CollectionFetchResult>;
+    fetchProjectDetailBySourceId(sourceProjectId: string): Promise<any>;
     fetchProjectDetail(item: any): Promise<any>;
     private applyDelay;
     private sleep;

@@ -13,6 +13,7 @@ export declare class SqliteProjectRepository implements IProjectRepository {
     saveRawPayload(rawPayload: RawPayload): Promise<void>;
     getObservationsByProjectId(projectId: string): Promise<ProjectObservation[]>;
     getLatestObservation(projectId: string): Promise<ProjectObservation | null>;
+    getLatestRawPayloadByProjectId(projectId: string): Promise<RawPayload | null>;
     findProjects(filter?: FindProjectsFilter): Promise<Project[]>;
     countProjects(filter?: FindProjectsFilter): Promise<number>;
     getLatestSuccessfulCollectionTimestamp(): Promise<Date | null>;

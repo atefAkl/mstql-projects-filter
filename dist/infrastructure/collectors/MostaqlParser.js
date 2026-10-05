@@ -95,8 +95,9 @@ class MostaqlParser {
     static enrichWithDetailPage(item, detailHtml) {
         this.checkAuthenticationStatus(detailHtml);
         // Budget Parsing
-        const budgetMatch = detailHtml.match(/data-type=\s*project-budget_range\s*><span[^>]*>([\s\S]*?)<\/span>/) ||
-            detailHtml.match(/الميزانية[\s\S]*?<div class="meta-value"[^>]*>([\s\S]*?)<\/div>/);
+        const budgetMatch = detailHtml.match(/data-type=["']?project-budget_range["']?[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/) ||
+            detailHtml.match(/الميزانية[\s\S]*?<div class="meta-value"[^>]*>([\s\S]*?)<\/div>/) ||
+            detailHtml.match(/الميزانية[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/);
         if (budgetMatch) {
             item.budgetRaw = this.cleanText(budgetMatch[1]);
             const { min, max, avg } = this.parseBudgetRange(item.budgetRaw);
@@ -128,7 +129,25 @@ class MostaqlParser {
         if (fullDescMatch) {
             item.descriptionRaw = this.cleanText(fullDescMatch[1]);
         }
-        // Client Profile URL
+        // Bids Count Parsing
+        const bidsMatch = detailHtml.match(/data-type=["']?project-bids_count["']?[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/) ||
+            detailHtml.match(/عدد العروض[\s\S]*?<div class="meta-value"[^>]*>([\s\S]*?)<\/div>/) ||
+            detailHtml.match(/عدد العروض[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/) ||
+            detailHtml.match(/عدد العروض[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/);
+        if (bidsMatch) {
+            item.bidsCountRaw = this.cleanText(bidsMatch[1]);
+            const parsed = this.parseBidsCount(item.bidsCountRaw);
+            if (parsed > 0 || item.bidsCountParsed === undefined) {
+                item.bidsCountParsed = parsed;
+            }
+        }
+        // Client Name & Profile Parsing
+        const clientNameMatch = detailHtml.match(/class="[^"]*profile-card__name[^"]*"[\s\S]*?<bdi>([\s\S]*?)<\/bdi>/) ||
+            detailHtml.match(/<h3 class="[^"]*profile-card__name[^"]*"[^>]*>([\s\S]*?)<\/h3>/) ||
+            detailHtml.match(/صاحب المشروع[\s\S]*?<bdi>([\s\S]*?)<\/bdi>/);
+        if (clientNameMatch) {
+            item.clientNameRaw = this.cleanText(clientNameMatch[1]);
+        }
         const clientUrlMatch = detailHtml.match(/href="(https:\/\/mostaql\.com\/freelancers\/[^"]+)"/) ||
             detailHtml.match(/href="(https:\/\/mostaql\.com\/u\/[^"]+)"/);
         if (clientUrlMatch) {
