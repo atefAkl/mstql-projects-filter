@@ -1316,3 +1316,12 @@ function getWebDashboardHtml(): string {
 </body>
 </html>`;
 }
+
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  const app = createServer();
+  app.listen(PORT, () => {
+    console.log(`🟢 Mostaql Intelligence Server is running live on http://localhost:${PORT}`);
+  });
+}
+
