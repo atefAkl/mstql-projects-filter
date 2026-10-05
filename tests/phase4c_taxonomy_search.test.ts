@@ -258,5 +258,74 @@ describe('Phase 4C - Expanded Taxonomy, Search & Advanced Filtering Suite', () =
     const domainTerms = terms.filter(t => t.dimensionCode === 'domain');
     expect(domainTerms.length).toBe(0); // MUST be unclassified, no default 'software' fallback!
   });
+
+  it('12. Regression Test 1283115: Voice-over child project must NOT be classified as Healthcare or Education', async () => {
+    const item: ParsedProjectItem = {
+      sourceProjectId: '1283115',
+      title: 'مطلوب مؤدي صوت عربي لصوت طفل 6–8 سنوات لمشروع تسجيل صوتي',
+      sourceUrl: 'https://mostaql.com/project/1283115',
+      descriptionRaw: 'مطلوب أداء صوتي محترف لصوت طفل لمشروع تسجيل صوتي قصصي',
+      publishedAtParsed: new Date(),
+      bidsCountParsed: 0,
+      statusRaw: 'مفتوح',
+      skillsTagsRaw: ['تعليق صوتي', 'تسجيل صوتي']
+    };
+
+    await processItemUseCase.execute(item);
+    const project = await projectRepo.findBySourceProjectId('1283115');
+    expect(project).toBeDefined();
+
+    const terms = await taxonomyRepo.getProjectTerms(project!.id);
+    const termCodes = terms.map(t => t.code);
+    expect(termCodes).not.toContain('healthcare');
+    expect(termCodes).not.toContain('education');
+  });
+
+  it('13. Regression Test 1282870: Apartment engineering project must NOT be classified as Software, Web App, or Integration', async () => {
+    const item: ParsedProjectItem = {
+      sourceProjectId: '1282870',
+      title: 'عمل تصميمات وتخطيط هندسي شامل لشقة',
+      sourceUrl: 'https://mostaql.com/project/1282870',
+      descriptionRaw: 'مطلوب عمل مخططات إلكترونية وتخيطيط داخلي ومعماري لشقة فندقية',
+      publishedAtParsed: new Date(),
+      bidsCountParsed: 0,
+      statusRaw: 'مفتوح',
+      skillsTagsRaw: ['تصميم داخلي', 'أوتوكاد']
+    };
+
+    await processItemUseCase.execute(item);
+    const project = await projectRepo.findBySourceProjectId('1282870');
+    expect(project).toBeDefined();
+
+    const terms = await taxonomyRepo.getProjectTerms(project!.id);
+    const termCodes = terms.map(t => t.code);
+    expect(termCodes).not.toContain('software');
+    expect(termCodes).not.toContain('web_app');
+    expect(termCodes).not.toContain('srv_integration');
+    expect(termCodes).not.toContain('integration');
+  });
+
+  it('14. Regression Test 1224639: Academic rhetoric research project must NOT be classified as Consulting', async () => {
+    const item: ParsedProjectItem = {
+      sourceProjectId: '1224639',
+      title: 'باحث متميز في تخصص البلاغة والنقد',
+      sourceUrl: 'https://mostaql.com/project/1224639',
+      descriptionRaw: 'مطلوب باحث أكاديمي متخصص في نقد البلاغة العربية القديمة والحديثة',
+      publishedAtParsed: new Date(),
+      bidsCountParsed: 5,
+      statusRaw: 'مفتوح',
+      skillsTagsRaw: ['البلاغة العربية', 'النقد الأدبي']
+    };
+
+    await processItemUseCase.execute(item);
+    const project = await projectRepo.findBySourceProjectId('1224639');
+    expect(project).toBeDefined();
+
+    const terms = await taxonomyRepo.getProjectTerms(project!.id);
+    const termCodes = terms.map(t => t.code);
+    expect(termCodes).not.toContain('consulting');
+    expect(termCodes).not.toContain('srv_consulting');
+  });
 });
+
 

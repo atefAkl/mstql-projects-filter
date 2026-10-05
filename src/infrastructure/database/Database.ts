@@ -232,7 +232,7 @@ export class AppDatabase {
     const insertTerm = this.db.prepare(`
       INSERT INTO taxonomy_terms (id, dimension_code, code, name_ar, name_en, parent_id)
       VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(code) DO UPDATE SET name_ar=excluded.name_ar, name_en=excluded.name_en
+      ON CONFLICT(id) DO UPDATE SET dimension_code=excluded.dimension_code, code=excluded.code, name_ar=excluded.name_ar, name_en=excluded.name_en
     `);
 
     const insertSkillMap = this.db.prepare(`
@@ -268,12 +268,11 @@ export class AppDatabase {
         { id: 'term_dom_consulting', dim: 'domain', code: 'consulting', ar: 'أعمال واستشارات', en: 'Business & Consulting' },
 
         // Service Types
-        { id: 'term_srv_development', dim: 'service_type', code: 'development', ar: 'تطوير وبرمجة', en: 'Development' },
-        { id: 'term_srv_design', dim: 'service_type', code: 'design', ar: 'تصميم واجهات وتجربة', en: 'UI/UX Design' },
-        { id: 'term_srv_maintenance', dim: 'service_type', code: 'maintenance', ar: 'صيانة ودعم فني', en: 'Maintenance & Support' },
-        { id: 'term_srv_integration', dim: 'service_type', code: 'integration', ar: 'ربط وتكامل أنظمة', en: 'Integration' },
-        { id: 'term_srv_consulting', dim: 'service_type', code: 'consulting', ar: 'استشارات تقنية', en: 'Consulting' },
-        { id: 'term_srv_testing', dim: 'service_type', code: 'testing', ar: 'فحص واختبار الجودة', en: 'Testing & QA' },
+        { id: 'term_srv_development', dim: 'service_type', code: 'srv_development', ar: 'تطوير وبرمجة', en: 'Development' },
+        { id: 'term_srv_design', dim: 'service_type', code: 'srv_design', ar: 'تصميم واجهات وتجربة', en: 'UI/UX Design' },
+        { id: 'term_srv_maintenance', dim: 'service_type', code: 'srv_maintenance', ar: 'صيانة ودعم فني', en: 'Maintenance & Support' },
+        { id: 'term_srv_integration', dim: 'service_type', code: 'srv_integration', ar: 'ربط وتكامل أنظمة', en: 'Integration' },
+        { id: 'term_srv_consulting', dim: 'service_type', code: 'srv_consulting', ar: 'استشارات تقنية', en: 'Consulting' },
 
         // Project Types
         { id: 'term_pt_web_app', dim: 'project_type', code: 'web_app', ar: 'تطبيق ويب', en: 'Web Application' },
