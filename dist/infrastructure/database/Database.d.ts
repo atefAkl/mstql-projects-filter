@@ -4,5 +4,6 @@ export declare class AppDatabase {
     constructor(dbPath?: string);
     getRawConnection(): Database.Database;
     runMigrations(): void;
+    seedInitialTaxonomy(): void;
     close(): void;
 }

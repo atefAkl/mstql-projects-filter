@@ -3,13 +3,15 @@ import path from 'path';
 import { AppDatabase } from '../infrastructure/database/Database';
 import { SqliteProjectRepository } from '../infrastructure/repositories/SqliteProjectRepository';
 import { SqliteCollectionRunRepository } from '../infrastructure/repositories/SqliteCollectionRunRepository';
+import { SqliteTaxonomyRepository } from '../infrastructure/repositories/SqliteTaxonomyRepository';
 import { MostaqlHtmlCollectorAdapter } from '../infrastructure/collectors/MostaqlHtmlCollectorAdapter';
 import { ProcessCollectionItemUseCase } from '../application/use-cases/ProcessCollectionItemUseCase';
 import { DailyCollectionUseCase } from '../application/use-cases/DailyCollectionUseCase';
 import { DailyScheduler } from '../application/schedulers/DailyScheduler';
 import { GetAndRefreshProjectUseCase } from '../application/use-cases/GetAndRefreshProjectUseCase';
 import { BackfillIncompleteProjectsUseCase } from '../application/use-cases/BackfillIncompleteProjectsUseCase';
-import { defaultConfig } from '../shared/config';
+import { RuleBasedClassifierService } from '../application/services/RuleBasedClassifierService';
+import { ProjectSearchCriteria } from '../core/interfaces/IProjectRepository';
 
 export function createServer(dbPath?: string) {
   const app = express();
@@ -19,8 +21,9 @@ export function createServer(dbPath?: string) {
   const db = appDb.getRawConnection();
   const projectRepo = new SqliteProjectRepository(db);
   const runRepo = new SqliteCollectionRunRepository(db);
+  const taxonomyRepo = new SqliteTaxonomyRepository(db);
   const collector = new MostaqlHtmlCollectorAdapter({ minDelayMs: 1000, maxDelayMs: 1500 });
-  const processItemUseCase = new ProcessCollectionItemUseCase(projectRepo);
+  const processItemUseCase = new ProcessCollectionItemUseCase(projectRepo, taxonomyRepo, db);
   const dailyCollectionUseCase = new DailyCollectionUseCase(collector, projectRepo, runRepo, processItemUseCase);
   const getAndRefreshUseCase = new GetAndRefreshProjectUseCase(projectRepo, collector);
   const scheduler = new DailyScheduler(dailyCollectionUseCase);
@@ -57,7 +60,51 @@ export function createServer(dbPath?: string) {
     }
   });
 
-  // 2. Trigger Smart Refresh Action Endpoint (POST /api/projects/:id/refresh)
+  // 2. Taxonomy API Endpoint (GET /api/taxonomy)
+  apiRouter.get('/taxonomy', async (_req: Request, res: Response) => {
+    try {
+      const dimensions = await taxonomyRepo.getAllDimensions();
+      const terms = await taxonomyRepo.getAllTerms();
+      const skillMappings = await taxonomyRepo.getAllSkillMappings();
+
+      res.json({
+        dimensions,
+        terms,
+        skillMappings,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // 3. Trigger Reclassification API (POST /api/taxonomy/reclassify)
+  apiRouter.post('/taxonomy/reclassify', async (_req: Request, res: Response) => {
+    try {
+      const classifier = new RuleBasedClassifierService(taxonomyRepo, db);
+      const projects = await projectRepo.findProjects({ limit: 500 });
+
+      let classifiedCount = 0;
+      for (const p of projects) {
+        const rawPayload = await projectRepo.getLatestRawPayloadByProjectId(p.id);
+        const metadata = rawPayload?.rawMetadata || {};
+        const skills = (metadata as any).skillsTagsRaw || [];
+        const clientName = (metadata as any).clientNameRaw || '';
+
+        await classifier.classifyProject(p, skills, clientName);
+        classifiedCount++;
+      }
+
+      res.json({
+        success: true,
+        message: `تم تصنيف وشهر ${classifiedCount} مشروع بنجاح وفق محرك Taxonomy & FTS`,
+        classifiedCount,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: (err as Error).message });
+    }
+  });
+
+  // 4. Trigger Smart Refresh Action Endpoint (POST /api/projects/:id/refresh)
   apiRouter.post('/projects/:id/refresh', async (req: Request, res: Response) => {
     try {
       const projectId = req.params.id as string;
@@ -65,6 +112,14 @@ export function createServer(dbPath?: string) {
         sourceProjectId: projectId,
         forceRefresh: true,
       });
+      
+      // Auto classify after refresh
+      if (result.project) {
+        const classifier = new RuleBasedClassifierService(taxonomyRepo, db);
+        const rawMeta = (result.rawPayload?.rawMetadata as any) || {};
+        await classifier.classifyProject(result.project, rawMeta.skillsTagsRaw || [], rawMeta.clientNameRaw);
+      }
+
       res.json(result);
     } catch (err) {
       console.error('[API Error /projects/:id/refresh]:', err);
@@ -72,7 +127,7 @@ export function createServer(dbPath?: string) {
     }
   });
 
-  // 3. Specific Project Detail & Smart Refresh Endpoint (GET /api/projects/:id)
+  // 5. Specific Project Detail Endpoint (GET /api/projects/:id)
   apiRouter.get('/projects/:id', async (req: Request, res: Response) => {
     try {
       const projectId = req.params.id as string;
@@ -88,69 +143,49 @@ export function createServer(dbPath?: string) {
     }
   });
 
-  // 4. Project Explorer Search & Filter API (GET /api/projects)
+  // 6. Phase 4C Expanded Project Search & Multi-Filter API (GET /api/projects)
   apiRouter.get('/projects', async (req: Request, res: Response) => {
     try {
-      const page = parseInt(req.query.page as string || '1', 10);
-      const limit = parseInt(req.query.limit as string || '15', 10);
-      const offset = (page - 1) * limit;
-      const q = req.query.q as string || '';
-      const status = req.query.status as string || '';
+      const criteria: ProjectSearchCriteria = {
+        query: req.query.q as string || req.query.query as string || undefined,
+        publishedFrom: req.query.publishedFrom ? new Date(req.query.publishedFrom as string) : undefined,
+        publishedTo: req.query.publishedTo ? new Date(req.query.publishedTo as string) : undefined,
+        datePreset: (req.query.datePreset as any) || undefined,
+        budgetMin: req.query.budgetMin ? parseFloat(req.query.budgetMin as string) : undefined,
+        budgetMax: req.query.budgetMax ? parseFloat(req.query.budgetMax as string) : undefined,
+        budgetType: (req.query.budgetType as any) || undefined,
+        bidsFrom: req.query.bidsFrom ? parseInt(req.query.bidsFrom as string, 10) : undefined,
+        bidsTo: req.query.bidsTo ? parseInt(req.query.bidsTo as string, 10) : undefined,
+        bidsPreset: (req.query.bidsPreset as any) || undefined,
+        status: (req.query.status as string) || undefined,
+        executionDaysMin: req.query.executionDaysMin ? parseInt(req.query.executionDaysMin as string, 10) : undefined,
+        executionDaysMax: req.query.executionDaysMax ? parseInt(req.query.executionDaysMax as string, 10) : undefined,
+        skills: req.query.skills ? (typeof req.query.skills === 'string' ? req.query.skills.split(',') : (req.query.skills as string[])) : undefined,
+        skillsMatchMode: (req.query.skillsMatchMode as any) || 'any',
+        domain: (req.query.domain as string) || undefined,
+        serviceType: (req.query.serviceType as string) || undefined,
+        projectType: (req.query.projectType as string) || undefined,
+        industry: (req.query.industry as string) || undefined,
+        workType: (req.query.workType as string) || undefined,
+        clientId: (req.query.clientId as string) || undefined,
+        clientName: (req.query.clientName as string) || undefined,
+        competitionLevel: (req.query.competitionLevel as any) || undefined,
+        completenessStatus: (req.query.completenessStatus as string) || undefined,
+        sortBy: (req.query.sortBy as any) || 'published_at',
+        sortOrder: (req.query.sortOrder as any) || 'desc',
+        page: parseInt(req.query.page as string || '1', 10),
+        limit: parseInt(req.query.limit as string || '15', 10),
+      };
 
-      let sql = `
-        SELECT p.id, p.source_project_id, p.title, p.source_url, p.published_at, p.first_seen_at, p.last_seen_at, p.status,
-               o.bids_count, o.budget_min_usd, o.budget_max_usd, o.budget_avg_usd
-        FROM projects p
-        LEFT JOIN project_observations o ON o.id = (
-          SELECT o2.id FROM project_observations o2
-          WHERE o2.project_id = p.id
-          ORDER BY o2.observed_at DESC, o2.id DESC
-          LIMIT 1
-        )
-        WHERE 1=1
-      `;
-      const params: any[] = [];
-
-      if (q) {
-        sql += ` AND (p.title LIKE ? OR p.description_raw LIKE ? OR p.source_project_id LIKE ?)`;
-        params.push(`%${q}%`, `%${q}%`, `%${q}%`);
-      }
-
-      if (status) {
-        sql += ` AND p.status = ?`;
-        params.push(status);
-      }
-
-      sql += ` ORDER BY p.published_at DESC LIMIT ? OFFSET ?`;
-      params.push(limit, offset);
-
-      const rows = db.prepare(sql).all(...params);
-
-      let countSql = `SELECT COUNT(*) as total FROM projects p WHERE 1=1`;
-      const countParams: any[] = [];
-      if (q) {
-        countSql += ` AND (p.title LIKE ? OR p.description_raw LIKE ? OR p.source_project_id LIKE ?)`;
-        countParams.push(`%${q}%`, `%${q}%`, `%${q}%`);
-      }
-      if (status) {
-        countSql += ` AND p.status = ?`;
-        countParams.push(status);
-      }
-      const totalRow = db.prepare(countSql).get(...countParams) as { total: number };
-
-      res.json({
-        page,
-        limit,
-        total: totalRow.total,
-        totalPages: Math.ceil(totalRow.total / limit) || 1,
-        items: rows,
-      });
+      const result = await projectRepo.searchProjects(criteria);
+      res.json(result);
     } catch (err) {
+      console.error('[API Error /projects search]:', err);
       res.status(500).json({ error: (err as Error).message });
     }
   });
 
-  // 5. Trigger Live Incremental Collection API
+  // 7. Trigger Live Incremental Collection API
   apiRouter.post('/collection/trigger', async (_req: Request, res: Response) => {
     try {
       const result = await dailyCollectionUseCase.execute(true);
@@ -167,7 +202,7 @@ export function createServer(dbPath?: string) {
     }
   });
 
-  // 6. Collection Runs History API
+  // 8. Collection Runs History API
   apiRouter.get('/runs', async (_req: Request, res: Response) => {
     try {
       const runs = await runRepo.listRuns(20, 0);
@@ -177,7 +212,7 @@ export function createServer(dbPath?: string) {
     }
   });
 
-  // 7. Trigger Incomplete Projects Backfill Ingestion API
+  // 9. Trigger Incomplete Projects Backfill Ingestion API
   apiRouter.post('/collection/backfill', async (_req: Request, res: Response) => {
     try {
       const backfillUseCase = new BackfillIncompleteProjectsUseCase(projectRepo, collector);
@@ -207,7 +242,7 @@ export function createServer(dbPath?: string) {
 
   // Fallback 404 handler
   app.use((_req: Request, res: Response) => {
-    res.status(404).send(getWebDashboardHtml());
+    res.send(getWebDashboardHtml());
   });
 
   return app;
@@ -282,7 +317,7 @@ function getProjectDetailPageHtml(projectId: string): string {
         </button>
       </div>
 
-      <!-- Attributes KPI Grid (6 Columns) -->
+      <!-- Attributes KPI Grid -->
       <div class="grid grid-cols-2 md:grid-cols-6 gap-4 pt-2">
         <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
           <span class="text-[11px] text-slate-400 block">الميزانية التقديرية</span>
@@ -311,10 +346,10 @@ function getProjectDetailPageHtml(projectId: string): string {
       </div>
     </div>
 
-    <!-- Main Content Grid (Description + Skills vs Sidebar) -->
+    <!-- Main Content Grid -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
       
-      <!-- Right Main Column (Description & Required Skills) -->
+      <!-- Right Main Column -->
       <div class="md:col-span-2 space-y-6">
         
         <!-- Full Description Card -->
@@ -340,7 +375,7 @@ function getProjectDetailPageHtml(projectId: string): string {
 
       </div>
 
-      <!-- Left Sidebar Column (Client Info + Historical Observations Timeline) -->
+      <!-- Left Sidebar Column -->
       <div class="space-y-6">
         
         <!-- Client Information Card -->
@@ -580,9 +615,7 @@ function getProjectDetailPageHtml(projectId: string): string {
     }
 
     window.onload = async () => {
-      // Step 1: Render Local DB immediately (Progressive Local-First)
       await loadProjectDetails(false);
-      // Step 2: Automatically check Mostaql source in background
       autoCheckBackgroundUpdate();
     };
   </script>
@@ -608,7 +641,7 @@ function getWebDashboardHtml(): string {
 <body class="p-4 md:p-8 antialiased">
   <div class="max-w-7xl mx-auto space-y-6">
 
-    <!-- Live Toast Alert -->
+    <!-- Toast Alert -->
     <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-xl shadow-2xl text-sm font-semibold flex items-center gap-3 border transition">
       <div id="toast-spinner" class="spinner"></div>
       <span id="toast-message">جاري الاتصال بمستقل وجلب المشاريع الجديدة...</span>
@@ -619,18 +652,21 @@ function getWebDashboardHtml(): string {
       <div>
         <div class="flex items-center gap-2">
           <span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-            ● Local Platform Active (http://localhost:3000)
+            ● Local Platform Active (Single Source of Truth)
           </span>
-          <span class="text-xs text-slate-400">Phase 4A Smart Refresh Active</span>
+          <span class="text-xs text-blue-400 font-semibold">Phase 4C Taxonomy & FTS Engine Active</span>
         </div>
         <h1 class="text-2xl font-bold mt-2 text-white">منصة استخبارات سوق "مستقل" (Mostaql Intelligence)</h1>
-        <p class="text-sm text-slate-400 mt-1">تطبيق محلي لجمع وتحليل الطلب والميزانيات والمنافسة والمستجدات التاريخية واليومية</p>
+        <p class="text-sm text-slate-400 mt-1">فكرة وهندسة عاطف عقل • محرك بحث متعدد الأبعاد، فلترة متقدمة وتصنيف تقني ذكي محلي بالكامل</p>
       </div>
 
       <div class="flex items-center gap-3">
+        <button onclick="reclassifyAllProjects()" class="px-4 py-2 text-xs font-bold rounded-xl bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/30 transition flex items-center gap-1.5">
+          🔄 إعادة الفهرسة والتصنيف (Reclassify FTS)
+        </button>
         <button id="trigger-btn" onclick="triggerLiveCollection()" class="px-5 py-2.5 text-sm font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg transition flex items-center gap-2">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-          جلب المشاريع الجديدة الآن
+          جلب المشاريع الجديدة من المصدر
         </button>
       </div>
     </div>
@@ -638,15 +674,15 @@ function getWebDashboardHtml(): string {
     <!-- KPI Cards -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
       <div class="card-dark border rounded-2xl p-5 shadow-lg">
-        <span class="text-xs font-medium text-slate-400">إجمالي المشاريع في الـ DB</span>
+        <span class="text-xs font-medium text-slate-400">إجمالي المشاريع في قاعدة البيانات</span>
         <div id="kpi-projects" class="text-3xl font-extrabold text-white mt-1">...</div>
-        <span class="text-xs text-emerald-400 mt-1 block">محدثة لحظياً</span>
+        <span class="text-xs text-emerald-400 mt-1 block">Local Single Source of Truth</span>
       </div>
 
       <div class="card-dark border rounded-2xl p-5 shadow-lg">
-        <span class="text-xs font-medium text-slate-400">متوسط عدد العروض للمشروع</span>
+        <span class="text-xs font-medium text-slate-400">متوسط العروض لكل مشروع</span>
         <div id="kpi-bids" class="text-3xl font-extrabold text-blue-400 mt-1">...</div>
-        <span class="text-xs text-slate-400 mt-1 block">مؤشر كثافة المنافسة</span>
+        <span class="text-xs text-slate-400 mt-1 block">مؤشر المنافسة</span>
       </div>
 
       <div class="card-dark border rounded-2xl p-5 shadow-lg">
@@ -656,37 +692,223 @@ function getWebDashboardHtml(): string {
       </div>
 
       <div class="card-dark border rounded-2xl p-5 shadow-lg">
-        <span class="text-xs font-medium text-slate-400">تاريخ أحدث مشروع مجمع</span>
+        <span class="text-xs font-medium text-slate-400">تاريخ آخر تجميع من المصدر</span>
         <div id="kpi-last-date" class="text-sm font-bold text-amber-400 mt-2">...</div>
-        <span class="text-xs text-slate-400 mt-1 block">Daily Cutoff Boundary</span>
+        <span class="text-xs text-slate-400 mt-1 block">Boundary Check</span>
       </div>
     </div>
 
-    <!-- Search & Filter Bar -->
-    <div class="card-dark border rounded-2xl p-4 shadow-lg flex flex-col md:flex-row gap-4 items-center justify-between">
-      <div class="flex-1 w-full flex items-center gap-3">
-        <input type="text" id="search-input" onkeyup="if(event.key==='Enter') fetchProjects()" placeholder="ابحث في عنوان أو وصف المشروع (مثال: ERP, Laravel, تطبيق جوال, متجر)..." 
-               class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500">
-        <button onclick="fetchProjects()" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-semibold transition">
-          بحث
+    <!-- Quick Filters Panel -->
+    <div class="card-dark border rounded-2xl p-5 shadow-xl space-y-4">
+      
+      <!-- Top Row: Search input + Apply / Clear -->
+      <div class="flex flex-col md:flex-row gap-4 items-center justify-between">
+        <div class="flex-1 w-full flex items-center gap-3">
+          <div class="relative w-full">
+            <input type="text" id="search-input" onkeyup="if(event.key==='Enter') applyFilters()" placeholder="البحث بالنص الكامل FTS (في العنوان، الوصف، المهارات، اسم العميل والتصنيفات)..." 
+                   class="w-full bg-slate-900 border border-slate-700 rounded-xl pr-10 pl-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500">
+            <span class="absolute right-3 top-2.5 text-slate-500">🔍</span>
+          </div>
+          <button onclick="applyFilters()" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold shadow-md transition whitespace-nowrap">
+            تطبيق الفلاتر ⚡
+          </button>
+          <button onclick="clearFilters()" class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm font-semibold transition whitespace-nowrap">
+            إعادة ضبط
+          </button>
+        </div>
+        <button onclick="toggleAdvancedFilters()" class="text-xs font-bold text-blue-400 hover:underline flex items-center gap-1 whitespace-nowrap">
+          <span id="adv-toggle-text">⚙️ الفلاتر المتقدمة (Advanced Filters) ▼</span>
         </button>
       </div>
 
-      <div class="flex items-center gap-3 w-full md:w-auto">
-        <select id="status-filter" onchange="fetchProjects()" class="bg-slate-900 border border-slate-700 text-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500">
-          <option value="">جميع الحالات</option>
-          <option value="مفتوح">مفتوح</option>
-          <option value="قيد التنفيذ">قيد التنفيذ</option>
-          <option value="مغلق">مغلق</option>
-        </select>
+      <!-- Quick Filter Options Bar -->
+      <div class="grid grid-cols-2 md:grid-cols-6 gap-3 pt-2 border-t border-slate-800 text-xs">
+        
+        <!-- Date Preset -->
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">الفترة الزمنية</label>
+          <select id="filter-date-preset" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2 focus:outline-none focus:border-blue-500">
+            <option value="">كافة الأوقات</option>
+            <option value="today">اليوم</option>
+            <option value="last_3_days">آخر 3 أيام</option>
+            <option value="last_7_days">آخر 7 أيام</option>
+            <option value="last_30_days">آخر 30 يوم</option>
+            <option value="last_90_days">آخر 90 يوم</option>
+            <option value="this_month">هذا الشهر</option>
+          </select>
+        </div>
+
+        <!-- Budget Range -->
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">الميزانية ($)</label>
+          <div class="flex gap-1">
+            <input type="number" id="filter-budget-min" placeholder="الأدنى" onchange="applyFilters()" class="w-1/2 bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2 text-xs">
+            <input type="number" id="filter-budget-max" placeholder="الأقصى" onchange="applyFilters()" class="w-1/2 bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2 text-xs">
+          </div>
+        </div>
+
+        <!-- Bids Count Presets -->
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">عدد العروض</label>
+          <select id="filter-bids-preset" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2 focus:outline-none focus:border-blue-500">
+            <option value="">جميع العروض</option>
+            <option value="0">بدون عروض (0)</option>
+            <option value="1-5">1 إلى 5 عروض</option>
+            <option value="6-10">6 إلى 10 عروض</option>
+            <option value="11-20">11 إلى 20 عرض</option>
+            <option value="21-50">21 إلى 50 عرض</option>
+            <option value="50+">أكثر من 50 عرض</option>
+          </select>
+        </div>
+
+        <!-- Status Filter -->
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">حالة المشروع</label>
+          <select id="filter-status" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2 focus:outline-none focus:border-blue-500">
+            <option value="">جميع الحالات</option>
+            <option value="مفتوح">مفتوح</option>
+            <option value="قيد التنفيذ">قيد التنفيذ</option>
+            <option value="مغلق">مغلق</option>
+          </select>
+        </div>
+
+        <!-- Technology Multi Select & Match Mode -->
+        <div class="col-span-2">
+          <div class="flex justify-between items-center mb-1">
+            <label class="text-slate-400 font-semibold">التقنيات (Technologies)</label>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span class="text-slate-500">السلوك:</span>
+              <label class="cursor-pointer text-blue-400"><input type="radio" name="skillsMatchMode" value="any" checked onchange="applyFilters()"> أي منها (Any)</label>
+              <label class="cursor-pointer text-purple-400"><input type="radio" name="skillsMatchMode" value="all" onchange="applyFilters()"> جميعها (All)</label>
+            </div>
+          </div>
+          <select id="filter-skills" multiple onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-1.5 h-16 focus:outline-none focus:border-blue-500 text-xs">
+            <option value="laravel">Laravel</option>
+            <option value="react">React</option>
+            <option value="vue">Vue.js</option>
+            <option value="nodejs">Node.js</option>
+            <option value="python">Python</option>
+            <option value="flutter">Flutter</option>
+            <option value="wordpress">WordPress</option>
+            <option value="php">PHP</option>
+            <option value="mysql">MySQL</option>
+            <option value="postgresql">PostgreSQL</option>
+          </select>
+        </div>
+
       </div>
+
+      <!-- Advanced Multi-Dimension Filters Drawer -->
+      <div id="advanced-filters-drawer" class="hidden pt-4 border-t border-slate-800 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs bg-slate-900/40 p-4 rounded-xl">
+        
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">المجال (Domain)</label>
+          <select id="filter-domain" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="">جميع المجالات</option>
+            <option value="software">برمجيات وتطوير (Software)</option>
+            <option value="design">تصميم ووسائط (Design)</option>
+            <option value="marketing">تسويق ومبيعات (Marketing)</option>
+            <option value="writing">كتابة وترجمة (Writing)</option>
+            <option value="consulting">أعمال واستشارات (Consulting)</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">نوع الخدمة (Service Type)</label>
+          <select id="filter-service-type" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="">جميع الخدمات</option>
+            <option value="development">تطوير وبرمجة</option>
+            <option value="design">تصميم واجهات وتجربة UI/UX</option>
+            <option value="maintenance">صيانة ودعم فني</option>
+            <option value="integration">ربط وتكامل أنظمة</option>
+            <option value="consulting">استشارات تقنية</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">نوع المشروع (Project Type)</label>
+          <select id="filter-project-type" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="">جميع أنواع المشاريع</option>
+            <option value="ecommerce">متجر إلكتروني (E-commerce)</option>
+            <option value="mobile_app">تطبيق جوال (Mobile App)</option>
+            <option value="web_app">تطبيق ويب (Web App)</option>
+            <option value="erp">نظام ERP وإدارة</option>
+            <option value="crm">نظام CRM</option>
+            <option value="wordpress_site">موقع ووردبريس</option>
+            <option value="api">واجهة API</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">طبيعة العمل (Work Type)</label>
+          <select id="filter-work-type" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="">جميع أنواع العمل</option>
+            <option value="new_dev">تطوير جديد من الصفر</option>
+            <option value="modification">تعديل وتطوير ميزات</option>
+            <option value="bug_fix">إصلاح أعطال ومشكلات</option>
+            <option value="migration">نقل وتحويل نظام</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">الترتيب حسب (Sort By)</label>
+          <select id="filter-sort-by" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="published_at">الأحدث نشرًا أولًا (Default)</option>
+            <option value="budget">الميزانية التقديرية</option>
+            <option value="bids_count">عدد العروض</option>
+            <option value="updated_at">تاريخ آخر تحديث</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">اتجاه الترتيب (Order)</label>
+          <select id="filter-sort-order" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="desc">تنازلي (الأعلى / الأحدث)</option>
+            <option value="asc">تصاعدي (الأقل / الأقدم)</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">مستوى المنافسة (Competition)</label>
+          <select id="filter-competition" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="">جميع المستويات</option>
+            <option value="very_low">منخفضة جداً (0-2 عروض)</option>
+            <option value="low">منخفضة (3-10 عروض)</option>
+            <option value="medium">متوسطة (11-25 عرض)</option>
+            <option value="high">مرتفعة (26-50 عرض)</option>
+            <option value="very_high">مرتفعة جداً (+50 عرض)</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-slate-400 mb-1 font-semibold">حالة اكتمال البيانات</label>
+          <select id="filter-completeness" onchange="applyFilters()" class="w-full bg-slate-900 border border-slate-700 text-slate-200 rounded-xl p-2">
+            <option value="">جميع البيانات</option>
+            <option value="complete">بيانات تفصيلية مكتملة (Complete)</option>
+            <option value="discovered">بيانات الفهرس فقط (Discovered)</option>
+          </select>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- Active Filters Tags Bar -->
+    <div id="active-filters-tags" class="hidden flex flex-wrap items-center gap-2 text-xs">
+      <span class="text-slate-400 font-bold">الفلاتر النشطة:</span>
+      <div id="tags-container" class="flex flex-wrap gap-2"></div>
     </div>
 
     <!-- Projects Table Explorer -->
-    <div class="card-dark border rounded-2xl p-6 shadow-lg space-y-4">
+    <div class="card-dark border rounded-2xl p-6 shadow-xl space-y-4">
       <div class="flex items-center justify-between">
-        <h2 class="text-lg font-bold text-white">مستكشف المشاريع (Project Explorer)</h2>
-        <span id="projects-count-label" class="text-xs text-slate-400">جاري التحميل...</span>
+        <div>
+          <h2 class="text-lg font-bold text-white">مستكشف المشاريع الذكي (Project Explorer)</h2>
+          <p class="text-xs text-slate-400">استعلام محلي محصن بالكامل - 0 Network Calls أثناء البحث والفلترة</p>
+        </div>
+        <span id="projects-count-label" class="text-xs font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-3 py-1.5 rounded-full">
+          جاري التحميل...
+        </span>
       </div>
 
       <div class="overflow-x-auto">
@@ -694,12 +916,12 @@ function getWebDashboardHtml(): string {
           <thead>
             <tr class="border-b border-slate-700 text-slate-400 bg-slate-900/50">
               <th class="p-3 font-semibold">المعرف</th>
-              <th class="p-3 font-semibold">عنوان المشروع</th>
-              <th class="p-3 font-semibold">تاريخ النشر الحقيقي</th>
-              <th class="p-3 font-semibold">عدد العروض</th>
-              <th class="p-3 font-semibold">الميزانية</th>
-              <th class="p-3 font-semibold">الحالة</th>
-              <th class="p-3 font-semibold">التفاصيل والمصدر</th>
+              <th class="p-3 font-semibold">عنوان المشروع والتقنيات</th>
+              <th class="p-3 font-semibold">تاريخ النشر</th>
+              <th class="p-3 font-semibold">العروض والمنافسة</th>
+              <th class="p-3 font-semibold">الميزانية التقديرية</th>
+              <th class="p-3 font-semibold">الحالة والاكتمال</th>
+              <th class="p-3 font-semibold">الإجراء والتفاصيل</th>
             </tr>
           </thead>
           <tbody id="projects-table-body" class="divide-y divide-slate-800">
@@ -710,9 +932,9 @@ function getWebDashboardHtml(): string {
 
       <!-- Pagination Controls -->
       <div class="flex items-center justify-between pt-4 border-t border-slate-800 text-xs text-slate-400">
-        <button id="prev-page-btn" onclick="changePage(-1)" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40">السابقة</button>
-        <span id="pagination-label">صفحة 1</span>
-        <button id="next-page-btn" onclick="changePage(1)" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40">التالية</button>
+        <button id="prev-page-btn" onclick="changePage(-1)" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40 font-semibold">السابقة</button>
+        <span id="pagination-label" class="font-bold text-slate-300">صفحة 1</span>
+        <button id="next-page-btn" onclick="changePage(1)" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40 font-semibold">التالية</button>
       </div>
     </div>
 
@@ -720,6 +942,18 @@ function getWebDashboardHtml(): string {
 
   <script>
     let currentPage = 1;
+
+    function toggleAdvancedFilters() {
+      const drawer = document.getElementById('advanced-filters-drawer');
+      const toggleText = document.getElementById('adv-toggle-text');
+      if (drawer.classList.contains('hidden')) {
+        drawer.classList.remove('hidden');
+        toggleText.innerText = '⚙️ إخفاء الفلاتر المتقدمة ▲';
+      } else {
+        drawer.classList.add('hidden');
+        toggleText.innerText = '⚙️ الفلاتر المتقدمة (Advanced Filters) ▼';
+      }
+    }
 
     function showToast(msg, isError = false) {
       const toast = document.getElementById('toast');
@@ -763,6 +997,20 @@ function getWebDashboardHtml(): string {
       }
     }
 
+    async function reclassifyAllProjects() {
+      showToast('جاري إعادة تشغيل محرك التصنيف والفهرسة FTS...');
+      try {
+        const res = await fetch('/api/taxonomy/reclassify', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message, !data.success);
+        setTimeout(hideToast, 4000);
+        fetchProjects();
+      } catch (err) {
+        showToast('فشل إعادة التصنيف', true);
+        setTimeout(hideToast, 4000);
+      }
+    }
+
     async function loadDashboardData() {
       try {
         const res = await fetch('/api/stats/overview');
@@ -774,19 +1022,144 @@ function getWebDashboardHtml(): string {
       } catch (err) {
         console.error('Error loading KPIs:', err);
       }
+      loadFiltersFromUrl();
       fetchProjects();
     }
 
+    function getSelectedSkills() {
+      const select = document.getElementById('filter-skills');
+      return Array.from(select.selectedOptions).map(opt => opt.value);
+    }
+
+    function applyFilters() {
+      currentPage = 1;
+      updateUrlState();
+      fetchProjects();
+    }
+
+    function clearFilters() {
+      document.getElementById('search-input').value = '';
+      document.getElementById('filter-date-preset').value = '';
+      document.getElementById('filter-budget-min').value = '';
+      document.getElementById('filter-budget-max').value = '';
+      document.getElementById('filter-bids-preset').value = '';
+      document.getElementById('filter-status').value = '';
+      document.getElementById('filter-domain').value = '';
+      document.getElementById('filter-service-type').value = '';
+      document.getElementById('filter-project-type').value = '';
+      document.getElementById('filter-work-type').value = '';
+      document.getElementById('filter-sort-by').value = 'published_at';
+      document.getElementById('filter-sort-order').value = 'desc';
+      document.getElementById('filter-competition').value = '';
+      document.getElementById('filter-completeness').value = '';
+
+      const skillsSelect = document.getElementById('filter-skills');
+      for (let i = 0; i < skillsSelect.options.length; i++) {
+        skillsSelect.options[i].selected = false;
+      }
+
+      applyFilters();
+    }
+
+    function updateUrlState() {
+      const params = new URLSearchParams();
+      const q = document.getElementById('search-input').value.trim();
+      if (q) params.set('q', q);
+
+      const datePreset = document.getElementById('filter-date-preset').value;
+      if (datePreset) params.set('datePreset', datePreset);
+
+      const bMin = document.getElementById('filter-budget-min').value;
+      if (bMin) params.set('budgetMin', bMin);
+
+      const bMax = document.getElementById('filter-budget-max').value;
+      if (bMax) params.set('budgetMax', bMax);
+
+      const bidsPreset = document.getElementById('filter-bids-preset').value;
+      if (bidsPreset) params.set('bidsPreset', bidsPreset);
+
+      const status = document.getElementById('filter-status').value;
+      if (status) params.set('status', status);
+
+      const skills = getSelectedSkills();
+      if (skills.length > 0) {
+        params.set('skills', skills.join(','));
+        const matchMode = document.querySelector('input[name="skillsMatchMode"]:checked')?.value || 'any';
+        params.set('skillsMatchMode', matchMode);
+      }
+
+      const domain = document.getElementById('filter-domain').value;
+      if (domain) params.set('domain', domain);
+
+      const serviceType = document.getElementById('filter-service-type').value;
+      if (serviceType) params.set('serviceType', serviceType);
+
+      const projectType = document.getElementById('filter-project-type').value;
+      if (projectType) params.set('projectType', projectType);
+
+      const workType = document.getElementById('filter-work-type').value;
+      if (workType) params.set('workType', workType);
+
+      const sortBy = document.getElementById('filter-sort-by').value;
+      if (sortBy && sortBy !== 'published_at') params.set('sortBy', sortBy);
+
+      const sortOrder = document.getElementById('filter-sort-order').value;
+      if (sortOrder && sortOrder !== 'desc') params.set('sortOrder', sortOrder);
+
+      const comp = document.getElementById('filter-competition').value;
+      if (comp) params.set('competitionLevel', comp);
+
+      const compStatus = document.getElementById('filter-completeness').value;
+      if (compStatus) params.set('completenessStatus', compStatus);
+
+      if (currentPage > 1) params.set('page', currentPage);
+
+      const newRelativePathQuery = window.location.pathname + '?' + params.toString();
+      history.pushState(null, '', newRelativePathQuery);
+    }
+
+    function loadFiltersFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('q')) document.getElementById('search-input').value = params.get('q');
+      if (params.has('datePreset')) document.getElementById('filter-date-preset').value = params.get('datePreset');
+      if (params.has('budgetMin')) document.getElementById('filter-budget-min').value = params.get('budgetMin');
+      if (params.has('budgetMax')) document.getElementById('filter-budget-max').value = params.get('budgetMax');
+      if (params.has('bidsPreset')) document.getElementById('filter-bids-preset').value = params.get('bidsPreset');
+      if (params.has('status')) document.getElementById('filter-status').value = params.get('status');
+      if (params.has('domain')) document.getElementById('filter-domain').value = params.get('domain');
+      if (params.has('serviceType')) document.getElementById('filter-service-type').value = params.get('serviceType');
+      if (params.has('projectType')) document.getElementById('filter-project-type').value = params.get('projectType');
+      if (params.has('workType')) document.getElementById('filter-work-type').value = params.get('workType');
+      if (params.has('sortBy')) document.getElementById('filter-sort-by').value = params.get('sortBy');
+      if (params.has('sortOrder')) document.getElementById('filter-sort-order').value = params.get('sortOrder');
+      if (params.has('competitionLevel')) document.getElementById('filter-competition').value = params.get('competitionLevel');
+      if (params.has('completenessStatus')) document.getElementById('filter-completeness').value = params.get('completenessStatus');
+      if (params.has('page')) currentPage = parseInt(params.get('page'), 10) || 1;
+
+      if (params.has('skillsMatchMode')) {
+        const radio = document.querySelector(\`input[name="skillsMatchMode"][value="\${params.get('skillsMatchMode')}"]\`);
+        if (radio) radio.checked = true;
+      }
+
+      if (params.has('skills')) {
+        const skillsArr = params.get('skills').split(',');
+        const skillsSelect = document.getElementById('filter-skills');
+        for (let i = 0; i < skillsSelect.options.length; i++) {
+          if (skillsArr.includes(skillsSelect.options[i].value)) {
+            skillsSelect.options[i].selected = true;
+          }
+        }
+      }
+    }
+
     async function fetchProjects() {
-      const q = document.getElementById('search-input').value;
-      const status = document.getElementById('status-filter').value;
-      const url = '/api/projects?page=' + currentPage + '&limit=12&q=' + encodeURIComponent(q) + '&status=' + encodeURIComponent(status);
+      const searchUrl = '/api/projects' + window.location.search;
 
       try {
-        const res = await fetch(url);
+        const res = await fetch(searchUrl);
         const data = await res.json();
 
-        document.getElementById('projects-count-label').innerText = 'عرض ' + data.items.length + ' من أصل ' + data.total.toLocaleString('ar-EG') + ' مشروع';
+        document.getElementById('projects-count-label').innerText = data.total.toLocaleString('ar-EG') + ' مشروع مطبق للمجال والفلترة';
         document.getElementById('pagination-label').innerText = 'صفحة ' + data.page + ' من ' + data.totalPages;
 
         document.getElementById('prev-page-btn').disabled = data.page <= 1;
@@ -796,33 +1169,54 @@ function getWebDashboardHtml(): string {
         tbody.innerHTML = '';
 
         if (data.items.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-slate-500">لا توجد مشاريع مطابقة للبحث</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-slate-500 font-semibold">لا توجد مشاريع مطابقة لفلاتر البحث الحالية في قاعدة البيانات المحلية</td></tr>';
           return;
         }
 
-        data.items.forEach(item => {
-          const tr = document.createElement('tr');
-          tr.className = 'hover:bg-slate-800/50 transition';
+        data.items.forEach(p => {
+          const row = document.createElement('tr');
+          row.className = 'hover:bg-slate-800/60 transition border-b border-slate-800/50';
 
-          const publishedDate = item.published_at ? new Date(item.published_at).toLocaleString('ar-EG') : 'NULL';
+          const obs = p.latestObservation;
+          let budgetStr = 'غير محدد';
+          if (obs) {
+            if (obs.budgetMinUsd && obs.budgetMaxUsd) budgetStr = '$' + obs.budgetMinUsd + ' - $' + obs.budgetMaxUsd;
+            else if (obs.budgetAvgUsd) budgetStr = '$' + obs.budgetAvgUsd;
+          }
 
-          tr.innerHTML = \`
-            <td class="p-3 font-mono text-xs text-slate-400">\${item.source_project_id}</td>
-            <td class="p-3 font-medium text-white">\${item.title}</td>
-            <td class="p-3 text-amber-300 text-xs font-semibold">\${publishedDate}</td>
-            <td class="p-3 font-semibold text-blue-400">\${item.bids_count} عروض</td>
-            <td class="p-3 text-emerald-400">\${item.budget_avg_usd ? '$' + item.budget_avg_usd : 'حسب الاتفاق'}</td>
-            <td class="p-3"><span class="px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">\${item.status}</span></td>
-            <td class="p-3 flex items-center gap-3">
-              <a href="/projects/\${item.source_project_id}" class="text-xs text-blue-400 font-semibold hover:underline bg-blue-500/10 px-2.5 py-1 rounded border border-blue-500/20">
-                التفاصيل 📄
-              </a>
-              <a href="\${item.source_url}" target="_blank" class="text-xs text-slate-400 hover:underline">
-                مستقل ↗
+          const bidsCount = obs ? obs.bidsCount : 0;
+          let compBadgeClass = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+          let compText = 'منافسة منخفضة جداً';
+
+          if (bidsCount >= 50) { compBadgeClass = 'bg-rose-500/10 text-rose-400 border-rose-500/20'; compText = 'منافسة مرتفعة جداً (+50)'; }
+          else if (bidsCount >= 26) { compBadgeClass = 'bg-orange-500/10 text-orange-400 border-orange-500/20'; compText = 'منافسة مرتفعة'; }
+          else if (bidsCount >= 11) { compBadgeClass = 'bg-amber-500/10 text-amber-400 border-amber-500/20'; compText = 'منافسة متوسطة'; }
+          else if (bidsCount >= 3) { compBadgeClass = 'bg-blue-500/10 text-blue-400 border-blue-500/20'; compText = 'منافسة منخفضة'; }
+
+          const skillsPills = (p.skills || []).slice(0, 3).map(s => \`<span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">\${s}</span>\`).join(' ');
+
+          row.innerHTML = \`
+            <td class="p-3 font-mono text-xs text-slate-400">\${p.sourceProjectId}</td>
+            <td class="p-3 font-semibold text-white max-w-xs">
+              <a href="/projects/\${p.sourceProjectId}" class="hover:text-blue-400 transition leading-snug block">\${p.title}</a>
+              <div class="flex flex-wrap gap-1 mt-1">\${skillsPills}</div>
+            </td>
+            <td class="p-3 text-xs text-amber-300">\${p.publishedAt ? new Date(p.publishedAt).toLocaleDateString('ar-EG') : 'غير محدد'}</td>
+            <td class="p-3 text-xs">
+              <span class="font-bold text-slate-200 block">\${bidsCount} عروض</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] border mt-1 inline-block \${compBadgeClass}">\${compText}</span>
+            </td>
+            <td class="p-3 font-bold text-emerald-400 text-xs">\${budgetStr}</td>
+            <td class="p-3 text-xs">
+              <span class="px-2 py-1 rounded-full bg-slate-800 text-emerald-400 border border-slate-700 font-semibold">\${p.status}</span>
+            </td>
+            <td class="p-3 text-xs">
+              <a href="/projects/\${p.sourceProjectId}" class="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 border border-blue-500/30 transition font-bold inline-flex items-center gap-1">
+                التفاصيل ↗
               </a>
             </td>
           \`;
-          tbody.appendChild(tr);
+          tbody.appendChild(row);
         });
 
       } catch (err) {
@@ -832,23 +1226,14 @@ function getWebDashboardHtml(): string {
 
     function changePage(delta) {
       currentPage += delta;
-      if (currentPage < 1) currentPage = 1;
+      updateUrlState();
       fetchProjects();
     }
 
-    window.onload = loadDashboardData;
+    window.onload = () => {
+      loadDashboardData();
+    };
   </script>
 </body>
 </html>`;
-}
-
-if (require.main === module || process.argv[1]?.includes('server')) {
-  const PORT = process.env.PORT || 3000;
-  const app = createServer();
-  app.listen(PORT, () => {
-    console.log(`==================================================`);
-    console.log(`Mostaql Market Intelligence Web Server Running!`);
-    console.log(`Open in Browser: http://localhost:${PORT}`);
-    console.log(`==================================================`);
-  });
 }

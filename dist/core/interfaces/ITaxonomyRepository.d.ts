@@ -1,0 +1,19 @@
+import { TaxonomyDimension, TaxonomyTerm, SourceSkillMapping, ProjectSkill, ProjectClassification } from '../entities/Taxonomy';
+export interface ITaxonomyRepository {
+    getAllDimensions(): Promise<TaxonomyDimension[]>;
+    getTermsByDimension(dimensionCode: string): Promise<TaxonomyTerm[]>;
+    getAllTerms(): Promise<TaxonomyTerm[]>;
+    getTermByCode(code: string): Promise<TaxonomyTerm | null>;
+    saveTerm(term: TaxonomyTerm): Promise<void>;
+    getSkillMapping(sourceSkill: string): Promise<SourceSkillMapping | null>;
+    getAllSkillMappings(): Promise<SourceSkillMapping[]>;
+    saveSkillMapping(mapping: SourceSkillMapping): Promise<void>;
+    saveProjectSkills(projectId: string, skills: {
+        skillName: string;
+        canonicalTermId?: string;
+    }[]): Promise<void>;
+    getProjectSkills(projectId: string): Promise<ProjectSkill[]>;
+    saveClassifications(classifications: ProjectClassification[]): Promise<void>;
+    getProjectClassifications(projectId: string): Promise<ProjectClassification[]>;
+    getProjectTerms(projectId: string): Promise<TaxonomyTerm[]>;
+}
