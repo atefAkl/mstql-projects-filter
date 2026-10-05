@@ -270,7 +270,7 @@ function getProjectDetailPageHtml(projectId) {
         <span id="completeness-badge" class="px-2.5 py-1 rounded-full text-xs font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30">
           مكتمل محلياً (Complete)
         </span>
-        <span class="text-xs text-slate-400">توقيت الرياض GMT+3</span>
+        <span class="text-xs text-amber-400 font-bold bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full">توقيت الرياض GMT+3</span>
         <span class="text-xs text-slate-400">معرف المشروع: <code class="text-white font-mono">${projectId}</code></span>
       </div>
     </div>
@@ -415,27 +415,44 @@ function getProjectDetailPageHtml(projectId) {
 
   <script>
     const projectId = "${projectId}";
-    const riyadhTzOptions = { timeZone: 'Asia/Riyadh' };
+    const riyadhTzOptions = { timeZone: 'Asia/Riyadh', hour12: true };
 
     function formatRiyadhDateTime(dateStr) {
       if (!dateStr) return 'غير محدد';
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return 'غير محدد';
-      return d.toLocaleString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      return d.toLocaleString('ar-EG', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     }
 
     function formatRiyadhTime(dateStr) {
       if (!dateStr) return 'غير محدد';
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return 'غير محدد';
-      return d.toLocaleTimeString('ar-SA', { ...riyadhTzOptions, hour: '2-digit', minute: '2-digit' });
+      return d.toLocaleTimeString('ar-EG', { ...riyadhTzOptions, hour: '2-digit', minute: '2-digit' });
     }
 
     function formatRiyadhDate(dateStr) {
       if (!dateStr) return 'غير محدد';
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return 'غير محدد';
-      return d.toLocaleDateString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'numeric', day: 'numeric' });
+      return d.toLocaleDateString('ar-EG', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    function formatRelativeRiyadh(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const mins = Math.floor(diffMs / 60000);
+      const hours = Math.floor(diffMs / 3600000);
+      const days = Math.floor(diffMs / 86400000);
+
+      if (mins < 1) return 'الآن';
+      if (mins < 60) return 'منذ ' + mins + ' دقيقة';
+      if (hours < 24) return 'منذ ' + hours + ' ساعة';
+      if (days < 30) return 'منذ ' + days + ' يوم';
+      return formatRiyadhDate(dateStr);
     }
 
     function showToast(msg, isError = false) {
@@ -665,7 +682,7 @@ function getWebDashboardHtml() {
           <span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
             ● Local Platform Active (Single Source of Truth)
           </span>
-          <span class="text-xs text-amber-400 font-semibold">توقيت الرياض GMT+3 (ar-SA)</span>
+          <span class="text-xs text-amber-400 font-bold bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full">توقيت الرياض GMT+3 (ar-EG Gregorian)</span>
         </div>
         <h1 class="text-2xl font-bold mt-2 text-white">منصة استخبارات سوق "مستقل" (Mostaql Intelligence)</h1>
         <p class="text-sm text-slate-400 mt-1">فكرة وهندسة عاطف عقل • محرك بحث متعدد الأبعاد، فلترة متقدمة وتصنيف تقني ذكي محلي بالكامل</p>
@@ -705,7 +722,7 @@ function getWebDashboardHtml() {
       <div class="card-dark border rounded-2xl p-5 shadow-lg">
         <span class="text-xs font-medium text-slate-400">تاريخ آخر تجميع (توقيت الرياض)</span>
         <div id="kpi-last-date" class="text-sm font-bold text-amber-400 mt-2">...</div>
-        <span class="text-xs text-slate-400 mt-1 block">GMT+3 (ar-SA)</span>
+        <span class="text-xs text-slate-400 mt-1 block">GMT+3 (Asia/Riyadh)</span>
       </div>
     </div>
 
@@ -928,7 +945,7 @@ function getWebDashboardHtml() {
             <tr class="border-b border-slate-700 text-slate-400 bg-slate-900/50">
               <th class="p-3 font-semibold">المعرف</th>
               <th class="p-3 font-semibold">عنوان المشروع والتقنيات</th>
-              <th class="p-3 font-semibold">تاريخ النشر (GMT+3)</th>
+              <th class="p-3 font-semibold">تاريخ ووقت النشر (توقيت الرياض GMT+3)</th>
               <th class="p-3 font-semibold">العروض والمنافسة</th>
               <th class="p-3 font-semibold">الميزانية التقديرية</th>
               <th class="p-3 font-semibold">الحالة والاكتمال</th>
@@ -953,20 +970,37 @@ function getWebDashboardHtml() {
 
   <script>
     let currentPage = 1;
-    const riyadhTzOptions = { timeZone: 'Asia/Riyadh' };
-
-    function formatRiyadhDate(dateStr) {
-      if (!dateStr) return 'غير محدد';
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return 'غير محدد';
-      return d.toLocaleDateString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'numeric', day: 'numeric' });
-    }
+    const riyadhTzOptions = { timeZone: 'Asia/Riyadh', hour12: true };
 
     function formatRiyadhDateTime(dateStr) {
       if (!dateStr) return 'غير محدد';
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return 'غير محدد';
-      return d.toLocaleString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      return d.toLocaleString('ar-EG', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatRiyadhDate(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      return d.toLocaleDateString('ar-EG', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    function formatRelativeRiyadh(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const mins = Math.floor(diffMs / 60000);
+      const hours = Math.floor(diffMs / 3600000);
+      const days = Math.floor(diffMs / 86400000);
+
+      if (mins < 1) return 'الآن';
+      if (mins < 60) return 'منذ ' + mins + ' دقيقة';
+      if (hours < 24) return 'منذ ' + hours + ' ساعة';
+      if (days < 30) return 'منذ ' + days + ' يوم';
+      return formatRiyadhDate(dateStr);
     }
 
     function toggleAdvancedFilters() {
@@ -1227,7 +1261,10 @@ function getWebDashboardHtml() {
               <a href="/projects/\${p.sourceProjectId}" class="hover:text-blue-400 transition leading-snug block">\${p.title}</a>
               <div class="flex flex-wrap gap-1 mt-1">\${skillsPills}</div>
             </td>
-            <td class="p-3 text-xs text-amber-300">\${formatRiyadhDate(p.publishedAt)}</td>
+            <td class="p-3 text-xs text-amber-300">
+              <span class="font-bold text-amber-300 block">\${formatRiyadhDateTime(p.publishedAt)}</span>
+              <span class="text-[10px] text-slate-400 block mt-0.5">\${formatRelativeRiyadh(p.publishedAt)}</span>
+            </td>
             <td class="p-3 text-xs">
               <span class="font-bold text-slate-200 block">\${bidsCount} عروض</span>
               <span class="px-2 py-0.5 rounded-full text-[10px] border mt-1 inline-block \${compBadgeClass}">\${compText}</span>

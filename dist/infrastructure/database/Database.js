@@ -152,8 +152,39 @@ class AppDatabase {
         reviewed_at TEXT NOT NULL,
         FOREIGN KEY (classification_id) REFERENCES project_classifications(id) ON DELETE CASCADE
       );
-
-      -- Performance Indexes
+    `;
+        this.db.exec(migrationSql);
+        // Safely alter existing table if columns don't exist
+        const projectPragma = this.db.prepare("PRAGMA table_info('projects')").all();
+        const projectColumns = projectPragma.map(c => c.name);
+        if (!projectColumns.includes('raw_content_hash')) {
+            this.db.exec("ALTER TABLE projects ADD COLUMN raw_content_hash TEXT");
+        }
+        if (!projectColumns.includes('normalized_content_hash')) {
+            this.db.exec("ALTER TABLE projects ADD COLUMN normalized_content_hash TEXT");
+        }
+        if (!projectColumns.includes('last_source_sync_at')) {
+            this.db.exec("ALTER TABLE projects ADD COLUMN last_source_sync_at TEXT");
+        }
+        if (!projectColumns.includes('last_sync_status')) {
+            this.db.exec("ALTER TABLE projects ADD COLUMN last_sync_status TEXT");
+        }
+        if (!projectColumns.includes('completeness_status')) {
+            this.db.exec("ALTER TABLE projects ADD COLUMN completeness_status TEXT DEFAULT 'complete'");
+        }
+        // Safely check taxonomy_terms table columns
+        const termPragma = this.db.prepare("PRAGMA table_info('taxonomy_terms')").all();
+        const termColumns = termPragma.map(c => c.name);
+        if (!termColumns.includes('dimension_code')) {
+            if (termColumns.includes('dimension')) {
+                this.db.exec("ALTER TABLE taxonomy_terms RENAME COLUMN dimension TO dimension_code");
+            }
+            else {
+                this.db.exec("ALTER TABLE taxonomy_terms ADD COLUMN dimension_code TEXT");
+            }
+        }
+        // Index creation
+        this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_projects_source_id ON projects(source_project_id);
       CREATE INDEX IF NOT EXISTS idx_projects_published_at ON projects(published_at);
       CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
@@ -166,8 +197,7 @@ class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_project_classifications_proj ON project_classifications(project_id);
       CREATE INDEX IF NOT EXISTS idx_project_classifications_term ON project_classifications(taxonomy_term_id);
       CREATE INDEX IF NOT EXISTS idx_project_skills_proj ON project_skills(project_id);
-    `;
-        this.db.exec(migrationSql);
+    `);
         // Create FTS5 Virtual Table for Full-Text Search
         try {
             this.db.exec(`
@@ -184,24 +214,6 @@ class AppDatabase {
         }
         catch (err) {
             console.warn('FTS5 virtual table warning:', err);
-        }
-        // Safely alter existing table if columns don't exist
-        const pragma = this.db.prepare("PRAGMA table_info('projects')").all();
-        const columnNames = pragma.map(c => c.name);
-        if (!columnNames.includes('raw_content_hash')) {
-            this.db.exec("ALTER TABLE projects ADD COLUMN raw_content_hash TEXT");
-        }
-        if (!columnNames.includes('normalized_content_hash')) {
-            this.db.exec("ALTER TABLE projects ADD COLUMN normalized_content_hash TEXT");
-        }
-        if (!columnNames.includes('last_source_sync_at')) {
-            this.db.exec("ALTER TABLE projects ADD COLUMN last_source_sync_at TEXT");
-        }
-        if (!columnNames.includes('last_sync_status')) {
-            this.db.exec("ALTER TABLE projects ADD COLUMN last_sync_status TEXT");
-        }
-        if (!columnNames.includes('completeness_status')) {
-            this.db.exec("ALTER TABLE projects ADD COLUMN completeness_status TEXT DEFAULT 'complete'");
         }
     }
     seedInitialTaxonomy() {

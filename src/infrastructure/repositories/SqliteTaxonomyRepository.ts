@@ -133,16 +133,20 @@ export class SqliteTaxonomyRepository implements ITaxonomyRepository {
   }
 
   public async saveProjectSkills(projectId: string, skills: { skillName: string; canonicalTermId?: string }[]): Promise<void> {
+    if (!skills || skills.length === 0) return;
+
+    this.db.prepare(`DELETE FROM project_skills WHERE project_id = ?`).run(projectId);
+
     const stmt = this.db.prepare(`
       INSERT INTO project_skills (id, project_id, skill_name, canonical_term_id)
       VALUES (?, ?, ?, ?)
-      ON CONFLICT(project_id, skill_name) DO UPDATE SET
-        canonical_term_id = COALESCE(excluded.canonical_term_id, project_skills.canonical_term_id)
     `);
 
     const transaction = this.db.transaction(() => {
+      let idx = 0;
       for (const s of skills) {
-        const id = `psk_${projectId.slice(0, 8)}_${Buffer.from(s.skillName).toString('hex').slice(0, 8)}`;
+        idx++;
+        const id = `psk_${projectId}_${idx}`;
         stmt.run(id, projectId, s.skillName, s.canonicalTermId || null);
       }
     });
