@@ -16,6 +16,7 @@ const DailyScheduler_1 = require("../application/schedulers/DailyScheduler");
 const GetAndRefreshProjectUseCase_1 = require("../application/use-cases/GetAndRefreshProjectUseCase");
 const BackfillIncompleteProjectsUseCase_1 = require("../application/use-cases/BackfillIncompleteProjectsUseCase");
 const RuleBasedClassifierService_1 = require("../application/services/RuleBasedClassifierService");
+const dateUtils_1 = require("../shared/dateUtils");
 function createServer(dbPath) {
     const app = (0, express_1.default)();
     app.use(express_1.default.json());
@@ -49,6 +50,9 @@ function createServer(dbPath) {
                 averageBids: avgStmt.avg_bids ? Math.round(avgStmt.avg_bids) : 0,
                 averageBudgetUsd: avgStmt.avg_budget ? Math.round(avgStmt.avg_budget) : 0,
                 lastCollectionAt: latestTimestamp ? latestTimestamp.toISOString() : null,
+                lastCollectionAtFormatted: (0, dateUtils_1.formatDateRiyadh)(latestTimestamp),
+                timezone: dateUtils_1.RIYADH_TIMEZONE,
+                locale: dateUtils_1.RIYADH_LOCALE,
                 isRunning: DailyCollectionUseCase_1.DailyCollectionUseCase.isRunning(),
                 latestRun,
             });
@@ -266,6 +270,7 @@ function getProjectDetailPageHtml(projectId) {
         <span id="completeness-badge" class="px-2.5 py-1 rounded-full text-xs font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30">
           مكتمل محلياً (Complete)
         </span>
+        <span class="text-xs text-slate-400">توقيت الرياض GMT+3</span>
         <span class="text-xs text-slate-400">معرف المشروع: <code class="text-white font-mono">${projectId}</code></span>
       </div>
     </div>
@@ -317,7 +322,7 @@ function getProjectDetailPageHtml(projectId) {
           <span id="attr-duration" class="text-sm font-extrabold text-purple-400 mt-1 block">غير محددة</span>
         </div>
         <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
-          <span class="text-[11px] text-slate-400 block">تاريخ النشر الحقيقي</span>
+          <span class="text-[11px] text-slate-400 block">تاريخ النشر (توقيت الرياض)</span>
           <span id="attr-published" class="text-xs font-semibold text-amber-300 mt-1 block">...</span>
         </div>
         <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
@@ -383,7 +388,7 @@ function getProjectDetailPageHtml(projectId) {
         <!-- Historical Observations Timeline Card -->
         <div class="card-dark border rounded-2xl p-6 shadow-xl space-y-4">
           <h2 class="text-sm font-bold text-white border-b border-slate-700 pb-3 flex items-center justify-between">
-            <span>⏱️ السجل الزمني (Snapshots)</span>
+            <span>⏱️ السجل الزمني (Snapshots GMT+3)</span>
             <span class="text-[11px] font-normal text-slate-400">تغيرات البيانات</span>
           </h2>
           <div id="observations-timeline" class="space-y-3 text-xs">
@@ -410,6 +415,28 @@ function getProjectDetailPageHtml(projectId) {
 
   <script>
     const projectId = "${projectId}";
+    const riyadhTzOptions = { timeZone: 'Asia/Riyadh' };
+
+    function formatRiyadhDateTime(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      return d.toLocaleString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatRiyadhTime(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      return d.toLocaleTimeString('ar-SA', { ...riyadhTzOptions, hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatRiyadhDate(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      return d.toLocaleDateString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'numeric', day: 'numeric' });
+    }
 
     function showToast(msg, isError = false) {
       const toast = document.getElementById('toast');
@@ -445,8 +472,8 @@ function getProjectDetailPageHtml(projectId) {
         document.getElementById('completeness-badge').innerText = proj.completenessStatus === 'complete' ? 'مكتمل محلياً (Complete)' : 'الفهرس فقط (' + (proj.completenessStatus || 'غير مكتمل') + ')';
         document.getElementById('project-description').innerText = proj.descriptionRaw || 'لا يوجد وصف متاح';
         document.getElementById('source-link').href = proj.sourceUrl;
-        document.getElementById('attr-published').innerText = proj.publishedAt ? new Date(proj.publishedAt).toLocaleString('ar-EG') : 'غير محدد';
-        document.getElementById('last-sync-time').innerText = proj.lastSourceSyncAt ? new Date(proj.lastSourceSyncAt).toLocaleString('ar-EG') : 'الآن';
+        document.getElementById('attr-published').innerText = formatRiyadhDateTime(proj.publishedAt);
+        document.getElementById('last-sync-time').innerText = formatRiyadhDateTime(proj.lastSourceSyncAt);
         document.getElementById('attr-sync-status').innerText = data.refreshStatus || proj.lastSyncStatus || 'local_cached';
         document.getElementById('attr-hash').innerText = proj.normalizedContentHash ? proj.normalizedContentHash.substring(0, 16) + '...' : 'لا يوجد';
 
@@ -492,7 +519,7 @@ function getProjectDetailPageHtml(projectId) {
           document.getElementById('attr-duration').innerText = rawMeta.executionDaysParsed + ' أيام';
         }
 
-        // Render timeline
+        // Render timeline with Riyadh GMT+3 timezone
         const timeline = document.getElementById('observations-timeline');
         timeline.innerHTML = '';
         if (obs.length === 0) {
@@ -510,11 +537,11 @@ function getProjectDetailPageHtml(projectId) {
             item.innerHTML = \`
               <div class="flex justify-between font-bold text-slate-200 text-xs">
                 <span>\${o.bidsCount} عروض (\${obsBudget})</span>
-                <span class="text-[10px] font-normal text-amber-400">\${new Date(o.observedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+                <span class="text-[10px] font-normal text-amber-400">\${formatRiyadhTime(o.observedAt)}</span>
               </div>
               <div class="flex justify-between items-center text-[11px] text-slate-400 pt-1">
                 <span>الحالة: <strong class="text-emerald-400">\${o.status}</strong></span>
-                <span class="text-[10px] text-slate-500">\${new Date(o.observedAt).toLocaleDateString('ar-EG')}</span>
+                <span class="text-[10px] text-slate-500">\${formatRiyadhDate(o.observedAt)}</span>
               </div>
             \`;
             timeline.appendChild(item);
@@ -638,7 +665,7 @@ function getWebDashboardHtml() {
           <span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
             ● Local Platform Active (Single Source of Truth)
           </span>
-          <span class="text-xs text-blue-400 font-semibold">Phase 4C Taxonomy & FTS Engine Active</span>
+          <span class="text-xs text-amber-400 font-semibold">توقيت الرياض GMT+3 (ar-SA)</span>
         </div>
         <h1 class="text-2xl font-bold mt-2 text-white">منصة استخبارات سوق "مستقل" (Mostaql Intelligence)</h1>
         <p class="text-sm text-slate-400 mt-1">فكرة وهندسة عاطف عقل • محرك بحث متعدد الأبعاد، فلترة متقدمة وتصنيف تقني ذكي محلي بالكامل</p>
@@ -676,9 +703,9 @@ function getWebDashboardHtml() {
       </div>
 
       <div class="card-dark border rounded-2xl p-5 shadow-lg">
-        <span class="text-xs font-medium text-slate-400">تاريخ آخر تجميع من المصدر</span>
+        <span class="text-xs font-medium text-slate-400">تاريخ آخر تجميع (توقيت الرياض)</span>
         <div id="kpi-last-date" class="text-sm font-bold text-amber-400 mt-2">...</div>
-        <span class="text-xs text-slate-400 mt-1 block">Boundary Check</span>
+        <span class="text-xs text-slate-400 mt-1 block">GMT+3 (ar-SA)</span>
       </div>
     </div>
 
@@ -888,7 +915,7 @@ function getWebDashboardHtml() {
       <div class="flex items-center justify-between">
         <div>
           <h2 class="text-lg font-bold text-white">مستكشف المشاريع الذكي (Project Explorer)</h2>
-          <p class="text-xs text-slate-400">استعلام محلي محصن بالكامل - 0 Network Calls أثناء البحث والفلترة</p>
+          <p class="text-xs text-slate-400">استعلام محلي محصن بالكامل - 0 Network Calls أثناء البحث والفلترة (توقيت الرياض GMT+3)</p>
         </div>
         <span id="projects-count-label" class="text-xs font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-3 py-1.5 rounded-full">
           جاري التحميل...
@@ -901,7 +928,7 @@ function getWebDashboardHtml() {
             <tr class="border-b border-slate-700 text-slate-400 bg-slate-900/50">
               <th class="p-3 font-semibold">المعرف</th>
               <th class="p-3 font-semibold">عنوان المشروع والتقنيات</th>
-              <th class="p-3 font-semibold">تاريخ النشر</th>
+              <th class="p-3 font-semibold">تاريخ النشر (GMT+3)</th>
               <th class="p-3 font-semibold">العروض والمنافسة</th>
               <th class="p-3 font-semibold">الميزانية التقديرية</th>
               <th class="p-3 font-semibold">الحالة والاكتمال</th>
@@ -926,6 +953,21 @@ function getWebDashboardHtml() {
 
   <script>
     let currentPage = 1;
+    const riyadhTzOptions = { timeZone: 'Asia/Riyadh' };
+
+    function formatRiyadhDate(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      return d.toLocaleDateString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'numeric', day: 'numeric' });
+    }
+
+    function formatRiyadhDateTime(dateStr) {
+      if (!dateStr) return 'غير محدد';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return 'غير محدد';
+      return d.toLocaleString('ar-SA', { ...riyadhTzOptions, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
 
     function toggleAdvancedFilters() {
       const drawer = document.getElementById('advanced-filters-drawer');
@@ -1002,7 +1044,7 @@ function getWebDashboardHtml() {
         document.getElementById('kpi-projects').innerText = data.totalProjects.toLocaleString('ar-EG');
         document.getElementById('kpi-bids').innerText = data.averageBids + ' عروض';
         document.getElementById('kpi-budget').innerText = data.averageBudgetUsd > 0 ? '$' + data.averageBudgetUsd : 'غير محدد';
-        document.getElementById('kpi-last-date').innerText = data.lastCollectionAt ? new Date(data.lastCollectionAt).toLocaleString('ar-EG') : 'غير محدد';
+        document.getElementById('kpi-last-date').innerText = formatRiyadhDateTime(data.lastCollectionAt);
       } catch (err) {
         console.error('Error loading KPIs:', err);
       }
@@ -1185,7 +1227,7 @@ function getWebDashboardHtml() {
               <a href="/projects/\${p.sourceProjectId}" class="hover:text-blue-400 transition leading-snug block">\${p.title}</a>
               <div class="flex flex-wrap gap-1 mt-1">\${skillsPills}</div>
             </td>
-            <td class="p-3 text-xs text-amber-300">\${p.publishedAt ? new Date(p.publishedAt).toLocaleDateString('ar-EG') : 'غير محدد'}</td>
+            <td class="p-3 text-xs text-amber-300">\${formatRiyadhDate(p.publishedAt)}</td>
             <td class="p-3 text-xs">
               <span class="font-bold text-slate-200 block">\${bidsCount} عروض</span>
               <span class="px-2 py-0.5 rounded-full text-[10px] border mt-1 inline-block \${compBadgeClass}">\${compText}</span>

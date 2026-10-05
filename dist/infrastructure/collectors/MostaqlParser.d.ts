@@ -20,7 +20,7 @@ export declare class MostaqlParser {
      */
     static enrichWithDetailPage(item: ParsedProjectItem, detailHtml: string): ParsedProjectItem;
     /**
-     * Utility to parse date strings into valid JavaScript Date objects.
+     * Utility to parse date strings into valid JavaScript Date objects in Riyadh GMT+3 timezone.
      * Returns undefined if date cannot be parsed (NEVER falls back to current time).
      */
     static parseDateTime(rawDateStr?: string): Date | undefined;

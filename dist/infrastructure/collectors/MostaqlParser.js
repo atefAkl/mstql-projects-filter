@@ -156,14 +156,19 @@ class MostaqlParser {
         return item;
     }
     /**
-     * Utility to parse date strings into valid JavaScript Date objects.
+     * Utility to parse date strings into valid JavaScript Date objects in Riyadh GMT+3 timezone.
      * Returns undefined if date cannot be parsed (NEVER falls back to current time).
      */
     static parseDateTime(rawDateStr) {
         if (!rawDateStr)
             return undefined;
         // Standard format YYYY-MM-DD HH:mm:ss or ISO
-        const normalized = rawDateStr.trim().replace(' ', 'T');
+        let normalized = rawDateStr.trim().replace(' ', 'T');
+        // Mostaql server dates are in Riyadh GMT+3 time.
+        // Append +03:00 if no offset is present
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(normalized)) {
+            normalized += '+03:00';
+        }
         const dateObj = new Date(normalized);
         if (!isNaN(dateObj.getTime())) {
             return dateObj;
